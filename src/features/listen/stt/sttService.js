@@ -44,7 +44,8 @@ class SttService {
         this.onTranscriptionComplete = null;
         this.onStatusUpdate = null;
 
-        this.modelInfo = null; 
+        this.modelInfo = null;
+        this.generation = 0;
     }
 
     setCallbacks({ onTranscriptionComplete, onStatusUpdate }) {
@@ -135,7 +136,8 @@ class SttService {
         }
 
         if (this.myCompletionTimer) clearTimeout(this.myCompletionTimer);
-        this.myCompletionTimer = setTimeout(() => this.flushMyCompletion(), COMPLETION_DEBOUNCE_MS);
+        const generation = this.generation;
+        this.myCompletionTimer = setTimeout(() => { if (generation === this.generation) this.flushMyCompletion(); }, COMPLETION_DEBOUNCE_MS);
     }
 
     debounceTheirCompletion(text) {
@@ -146,13 +148,17 @@ class SttService {
         }
 
         if (this.theirCompletionTimer) clearTimeout(this.theirCompletionTimer);
-        this.theirCompletionTimer = setTimeout(() => this.flushTheirCompletion(), COMPLETION_DEBOUNCE_MS);
+        const generation = this.generation;
+        this.theirCompletionTimer = setTimeout(() => { if (generation === this.generation) this.flushTheirCompletion(); }, COMPLETION_DEBOUNCE_MS);
     }
 
     async initializeSttSessions(language = 'en') {
+        const generation = ++this.generation;
+        const isCurrent = () => generation === this.generation;
         const effectiveLanguage = process.env.OPENAI_TRANSCRIBE_LANG || language || 'en';
 
         const modelInfo = await modelStateService.getCurrentModelInfo('stt');
+        if (!isCurrent()) throw new Error('STT initialization cancelled.');
         if (!modelInfo || !modelInfo.apiKey) {
             throw new Error('AI model or API key is not configured.');
         }
@@ -160,7 +166,7 @@ class SttService {
         console.log(`[SttService] Initializing STT for ${modelInfo.provider} using model ${modelInfo.model}`);
 
         const handleMyMessage = message => {
-            if (!this.modelInfo) {
+            if (!isCurrent() || !this.modelInfo) {
                 console.log('[SttService] Ignoring message - session already closed');
                 return;
             }
@@ -302,7 +308,7 @@ class SttService {
         const handleTheirMessage = message => {
             if (!message || typeof message !== 'object') return;
 
-            if (!this.modelInfo) {
+            if (!isCurrent() || !this.modelInfo) {
                 console.log('[SttService] Ignoring message - session already closed');
                 return;
             }
@@ -465,23 +471,29 @@ class SttService {
         const myOptions = { ...sttOptions, callbacks: mySttConfig.callbacks, sessionType: 'my' };
         const theirOptions = { ...sttOptions, callbacks: theirSttConfig.callbacks, sessionType: 'their' };
 
-        [this.mySttSession, this.theirSttSession] = await Promise.all([
-            createSTT(this.modelInfo.provider, myOptions),
-            createSTT(this.modelInfo.provider, theirOptions),
+        const results = await Promise.allSettled([
+            createSTT(modelInfo.provider, myOptions),
+            createSTT(modelInfo.provider, theirOptions),
         ]);
+        if (!isCurrent() || results.some(result => result.status === 'rejected')) {
+            await Promise.allSettled(results.filter(result => result.status === 'fulfilled').map(result => result.value?.close?.()));
+            throw new Error(!isCurrent() ? 'STT initialization cancelled.' : 'STT provider initialization failed.');
+        }
+        [this.mySttSession, this.theirSttSession] = results.map(result => result.value);
 
         console.log('✅ Both STT sessions initialized successfully.');
 
         // ── Setup keep-alive heart-beats ────────────────────────────────────────
         if (this.keepAliveInterval) clearInterval(this.keepAliveInterval);
         this.keepAliveInterval = setInterval(() => {
-            this._sendKeepAlive();
+            if (isCurrent()) this._sendKeepAlive();
         }, KEEP_ALIVE_INTERVAL_MS);
 
         // ── Schedule session auto-renewal ───────────────────────────────────────
         if (this.sessionRenewTimeout) clearTimeout(this.sessionRenewTimeout);
         this.sessionRenewTimeout = setTimeout(async () => {
             try {
+                if (!isCurrent()) return;
                 console.log('[SttService] Auto-renewing STT sessions…');
                 await this.renewSessions(language);
             } catch (err) {
@@ -744,6 +756,7 @@ class SttService {
     }
 
     async closeSessions() {
+        this.generation += 1;
         this.stopMacOSAudioCapture();
 
         // Clear heartbeat / renewal timers
@@ -776,15 +789,15 @@ class SttService {
             this.theirSttSession = null;
         }
 
-        await Promise.all(closePromises);
-        console.log('All STT sessions closed.');
-
-        // Reset state
+        // Clear old buffers before awaiting socket shutdown; a new generation
+        // must never be wiped by completion of the previous close operation.
         this.myCurrentUtterance = '';
         this.theirCurrentUtterance = '';
         this.myCompletionBuffer = '';
         this.theirCompletionBuffer = '';
-        this.modelInfo = null; 
+        this.modelInfo = null;
+        await Promise.all(closePromises);
+        console.log('All STT sessions closed.');
     }
 }
 

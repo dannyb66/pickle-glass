@@ -4,13 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function harness(transcripts = [], chunks = []) {
+function harness(transcripts = [], chunks = [], interview = null, failImage = false, controls = {}) {
     const calls = { sessions: [], prompts: [] };
     const window = { isDestroyed: () => false, webContents: { send() {} } };
     const mocks = {
-        electron: { BrowserWindow: {}, desktopCapturer: { getSources: async () => [] } },
+        '../common/services/interviewContextService': { on(event, callback) { if (event === 'invalidated') controls.invalidate = callback; }, context: () => interview || ({ context: null }), snapshot: () => null },
+        electron: { BrowserWindow: {}, desktopCapturer: { getSources: async () => failImage ? [{ thumbnail: { toJPEG: () => Buffer.from('synthetic-image'), getSize: () => ({ width: 10, height: 10 }) } }] : [] } },
         '../common/ai/factory': { createStreamingLLM: () => ({ streamChat: async messages => {
             calls.prompts.push(messages);
+            if (failImage && calls.prompts.length === 1) throw new Error('image unsupported');
+            if (controls.fallback && calls.prompts.length === 2) return controls.fallback;
             let offset=0;
             return { body: { getReader: () => ({ read: async () => offset<chunks.length ? {done:false,value:chunks[offset++]} : {done:true} }) } };
         } }) },
@@ -85,4 +88,33 @@ test('last SSE event without a trailing newline is processed when the stream end
     const { service } = harness([], [chunk]);
     await service.sendMessage('Read the target.');
     assert.equal(service.state.currentResponse, '180 ms');
+});
+
+
+test('interview context reaches Ask and image fallback with the same pinned packet, never inside system data', async () => {
+    const interview = { policy: 'Trusted system design policy', context: { role: 'user', content: 'PINNED ORCHID RESUME + JD + REFERENCES' } };
+    const { service, calls } = harness([{ speaker: 'Them', text: 'Current interview audio.' }], [], interview, true);
+    assert.equal((await service.sendMessage('Design this API.')).success, true);
+    assert.equal(calls.prompts.length, 2);
+    for (const messages of calls.prompts) {
+        assert.match(messages[0].content, /Trusted system design policy/);
+        assert.doesNotMatch(messages[0].content, /ORCHID|Current interview audio/);
+        assert.equal(messages[1].content, interview.context.content);
+        assert.match(messages[2].content, /Current interview audio/);
+        assert.doesNotMatch(JSON.stringify(messages), /WILLOW/);
+    }
+    assert.ok(calls.prompts[0].at(-1).content.some(part => part.type === 'image_url'));
+    assert.equal(typeof calls.prompts[1].at(-1).content, 'string');
+});
+
+
+test('deleting context while a text fallback awaits headers cancels its reader and reports failure', async () => {
+    let resolve; const controls = { fallback: new Promise(done => { resolve = done; }) };
+    const { service, calls } = harness([], [], { policy: 'trusted', context: { role: 'user', content: 'pinned context' } }, true, controls);
+    const request = service.sendMessage('Design the API.');
+    while (calls.prompts.length < 2) await new Promise(done => setImmediate(done));
+    controls.invalidate(['active-listen-session']); let cancelled = 0; let reads = 0;
+    resolve({ body: { getReader: () => ({ cancel: async () => { cancelled++; }, read: async () => { reads++; return { done: true }; } }) } });
+    const result = await request;
+    assert.equal(result.success, false); assert.match(result.error, /cancelled/); assert.equal(cancelled, 1); assert.equal(reads, 0);
 });

@@ -12,6 +12,7 @@ class ListenService {
         this.summaryService = new SummaryService();
         this.currentSessionId = null;
         this.isInitializingSession = false;
+        this.sessionGeneration = 0;
 
         this.setupServiceCallbacks();
         console.log('[ListenService] Service instance created.');
@@ -63,7 +64,7 @@ class ListenService {
                 case 'Listen':
                     console.log('[ListenService] changeSession to "Listen"');
                     internalBridge.emit('window:requestVisibility', { name: 'listen', visible: true });
-                    await this.initializeSession();
+                    if (!await this.initializeSession()) throw new Error('Listen initialization failed.');
                     if (listenWindow && !listenWindow.isDestroyed()) {
                         listenWindow.webContents.send('session-state-changed', { isActive: true });
                     }
@@ -97,36 +98,28 @@ class ListenService {
     }
 
     async handleTranscriptionComplete(speaker, text) {
-        console.log(`[ListenService] Transcription complete: ${speaker} - ${text}`);
-        
-        // Save to database
-        await this.saveConversationTurn(speaker, text);
-        
-        // Add to summary service for analysis
-        this.summaryService.addConversationTurn(speaker, text);
+        const sessionId = this.currentSessionId;
+        const generation = this.sessionGeneration;
+        const owner = authService.getCurrentUserId();
+        const current = () => sessionId && this.currentSessionId === sessionId && this.sessionGeneration === generation && authService.getCurrentUserId() === owner;
+        if (!current() || !text.trim()) return;
+        try {
+            await sessionRepository.touch(sessionId);
+            if (!current()) return;
+            await sttRepository.addTranscript({ sessionId, speaker, text: text.trim() });
+            if (!current()) return;
+            this.summaryService.addConversationTurn(speaker, text);
+        } catch (error) {
+            console.error('[ListenService] Could not save current transcript:', error.message);
+        }
     }
 
     async saveConversationTurn(speaker, transcription) {
-        if (!this.currentSessionId) {
-            console.error('[DB] Cannot save turn, no active session ID.');
-            return;
-        }
-        if (transcription.trim() === '') return;
-
-        try {
-            await sessionRepository.touch(this.currentSessionId);
-            await sttRepository.addTranscript({
-                sessionId: this.currentSessionId,
-                speaker: speaker,
-                text: transcription.trim(),
-            });
-            console.log(`[DB] Saved transcript for session ${this.currentSessionId}: (${speaker})`);
-        } catch (error) {
-            console.error('Failed to save transcript to DB:', error);
-        }
+        // Compatibility entry point shares the same guarded persistence path.
+        return this.handleTranscriptionComplete(speaker, transcription);
     }
 
-    async initializeNewSession() {
+    async initializeNewSession(generation = this.sessionGeneration) {
         try {
             // The UID is no longer passed to the repository method directly.
             // The adapter layer handles UID injection. We just ensure a user is available.
@@ -136,7 +129,9 @@ class ListenService {
                 throw new Error("Cannot initialize session: auth service not ready.");
             }
             
-            this.currentSessionId = await sessionRepository.getOrCreateActive('listen');
+            const sessionId = await sessionRepository.getOrCreateActive('listen');
+            if (generation !== this.sessionGeneration) return false;
+            this.currentSessionId = sessionId;
             console.log(`[DB] New listen session ensured: ${this.currentSessionId}`);
 
             // Set session ID for summary service
@@ -160,13 +155,14 @@ class ListenService {
             return false;
         }
 
+        const generation = ++this.sessionGeneration;
         this.isInitializingSession = true;
         this.sendToRenderer('session-initializing', true);
         this.sendToRenderer('update-status', 'Initializing sessions...');
 
         try {
             // Initialize database session
-            const sessionInitialized = await this.initializeNewSession();
+            const sessionInitialized = await this.initializeNewSession(generation);
             if (!sessionInitialized) {
                 throw new Error('Failed to initialize database session');
             }
@@ -177,6 +173,7 @@ class ListenService {
 
             let sttReady = false;
             for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+                if (generation !== this.sessionGeneration) throw new Error('Session start cancelled.');
                 try {
                     await this.sttService.initializeSttSessions(language);
                     sttReady = true;
@@ -193,6 +190,7 @@ class ListenService {
             if (!sttReady) throw new Error('STT init failed after retries');
             /* ------------------------------------------- */
 
+            if (generation !== this.sessionGeneration) throw new Error('Session start cancelled.');
             console.log('✅ Listen service initialized successfully.');
             
             this.sendToRenderer('update-status', 'Connected. Ready to listen.');
@@ -205,7 +203,7 @@ class ListenService {
         } finally {
             this.isInitializingSession = false;
             this.sendToRenderer('session-initializing', false);
-            this.sendToRenderer('change-listen-capture-state', { status: "start" });
+            if (generation === this.sessionGeneration && this.sttService.isSessionActive()) this.sendToRenderer('change-listen-capture-state', { status: "start" });
         }
     }
 
@@ -229,6 +227,11 @@ class ListenService {
     }
 
     async closeSession() {
+        this.sessionGeneration += 1;
+        const closingSessionId = this.currentSessionId;
+        this.currentSessionId = null;
+        this.summaryService.setSessionId(null);
+        this.summaryService.resetConversationHistory();
         try {
             this.sendToRenderer('change-listen-capture-state', { status: "stop" });
             // Close STT sessions
@@ -237,9 +240,9 @@ class ListenService {
             await this.stopMacOSAudioCapture();
 
             // End database session
-            if (this.currentSessionId) {
-                await sessionRepository.end(this.currentSessionId);
-                console.log(`[DB] Session ${this.currentSessionId} ended.`);
+            if (closingSessionId) {
+                await sessionRepository.end(closingSessionId);
+                console.log(`[DB] Session ${closingSessionId} ended.`);
             }
 
             // Reset state

@@ -55,6 +55,15 @@ class AuthService {
             const auth = getFirebaseAuth();
             onAuthStateChanged(auth, async (user) => {
                 const previousUser = this.currentUser;
+                const nextOwner = user?.uid || 'default_user';
+                if (nextOwner !== this.currentUserId) {
+                    // Stop capture and cancel source-bearing requests BEFORE the
+                    // owner changes, so late callbacks cannot route into Firebase.
+                    BrowserWindow.getAllWindows().forEach(win => { if (!win.isDestroyed()) win.webContents.send('interview:owner-changing'); });
+                    await require('../../ask/askService').closeAskWindow();
+                    const listen = require('../../listen/listenService');
+                    if (listen.currentSessionId) await listen.closeSession();
+                }
 
                 if (user) {
                     // User signed IN

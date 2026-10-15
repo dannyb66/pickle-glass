@@ -4,6 +4,7 @@ const { createLLM } = require('../../common/ai/factory');
 const sessionRepository = require('../../common/repositories/session');
 const summaryRepository = require('./repositories');
 const modelStateService = require('../../common/services/modelStateService');
+const interviewContext = require('../../common/services/interviewContextService');
 
 class SummaryService {
     constructor() {
@@ -11,6 +12,8 @@ class SummaryService {
         this.analysisHistory = [];
         this.conversationHistory = [];
         this.currentSessionId = null;
+        this.generation = 0;
+        interviewContext.on('invalidated', sessions => { if (sessions.includes(this.currentSessionId)) this.resetConversationHistory(); });
         
         // Callbacks
         this.onAnalysisComplete = null;
@@ -24,6 +27,7 @@ class SummaryService {
 
     setSessionId(sessionId) {
         this.currentSessionId = sessionId;
+        this.generation += 1;
     }
 
     sendToRenderer(channel, data) {
@@ -50,6 +54,7 @@ class SummaryService {
     }
 
     resetConversationHistory() {
+        this.generation += 1;
         this.conversationHistory = [];
         this.previousAnalysisResult = null;
         this.analysisHistory = [];
@@ -75,6 +80,10 @@ class SummaryService {
             return null;
         }
 
+        const requestSessionId = this.currentSessionId;
+        const requestGeneration = this.generation;
+        const requestOwner = require('../../common/services/authService').getCurrentUserId();
+        const stillCurrent = () => requestSessionId === this.currentSessionId && requestGeneration === this.generation && requestOwner === require('../../common/services/authService').getCurrentUserId();
         const recentConversation = this.formatConversationForPrompt(conversationTexts, maxTurns);
 
         // 이전 분석 결과를 프롬프트에 포함
@@ -91,7 +100,8 @@ Please build upon this context while analyzing the new conversation segments.
         }
 
         const basePrompt = getSystemPrompt('pickle_glass_analysis', '', false);
-        const systemPrompt = basePrompt.replace('{{CONVERSATION_HISTORY}}', recentConversation);
+        const interview = requestSessionId ? interviewContext.context(requestSessionId) : { context: null };
+        const systemPrompt = basePrompt.replace('{{CONVERSATION_HISTORY}}', interview.context ? '' : recentConversation) + (interview.policy ? `\n\n${interview.policy}` : '');
 
         try {
             if (this.currentSessionId) {
@@ -135,6 +145,9 @@ Keep all points concise and build upon previous analysis if provided.`,
                 },
             ];
 
+            if (interview.context) messages.splice(1, 0, interview.context, { role: 'user', content: `Recent conversation (observations):\n${recentConversation}` });
+            if (!stillCurrent()) return null;
+            if (requestSessionId) interviewContext.snapshot(requestSessionId);
             console.log('🤖 Sending analysis request to AI...');
 
             const llm = createLLM(modelInfo.provider, {
@@ -148,6 +161,8 @@ Keep all points concise and build upon previous analysis if provided.`,
 
             const completion = await llm.chat(messages);
 
+            if (!stillCurrent()) return null;
+            if (requestSessionId) interviewContext.snapshot(requestSessionId);
             const responseText = completion.content;
             console.log(`✅ Analysis response received: ${responseText}`);
             const structuredData = this.parseResponseText(responseText, this.previousAnalysisResult);
@@ -155,7 +170,7 @@ Keep all points concise and build upon previous analysis if provided.`,
             if (this.currentSessionId) {
                 try {
                     summaryRepository.saveSummary({
-                        sessionId: this.currentSessionId,
+                        sessionId: requestSessionId,
                         text: responseText,
                         tldr: structuredData.summary.join('\n'),
                         bullet_json: JSON.stringify(structuredData.topic.bullets),
@@ -182,7 +197,9 @@ Keep all points concise and build upon previous analysis if provided.`,
             return structuredData;
         } catch (error) {
             console.error('❌ Error during analysis generation:', error.message);
-            return this.previousAnalysisResult; // 에러 시 이전 결과 반환
+            if (!stillCurrent()) return null;
+            try { if (requestSessionId) interviewContext.snapshot(requestSessionId); } catch { return null; }
+            return this.previousAnalysisResult;
         }
     }
 

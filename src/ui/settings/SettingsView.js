@@ -1417,6 +1417,9 @@ export class SettingsView extends LitElement {
                 </div>
 
                 <div class="buttons-section">
+                    <button class="settings-button full-width" @click=${() => window.api.interview.open()}>
+                        <span>Interview Profiles</span>
+                    </button>
                     <button class="settings-button full-width" @click=${this.handlePersonalize}>
                         <span>Personalize / Meeting Notes</span>
                     </button>
