@@ -215,7 +215,7 @@ class AskService {
      * @param {string} userPrompt
      * @returns {Promise<{success: boolean, response?: string, error?: string}>}
      */
-    async sendMessage(userPrompt, conversationHistoryRaw=[]) {
+    async sendMessage(userPrompt, conversationHistoryRaw = null) {
         internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
@@ -240,6 +240,15 @@ class AskService {
             console.log(`[AskService] 🤖 Processing message: ${userPrompt.substring(0, 50)}...`);
 
             sessionId = await sessionRepository.getOrCreateActive('ask');
+            // Normal Ask requests include captured audio from this active session.
+            // An explicit array (including [] for screen-only Ask) remains authoritative.
+            if (!Array.isArray(conversationHistoryRaw)) {
+                const sttRepository = require('../listen/stt/repositories');
+                const transcripts = await sttRepository.getAllTranscriptsBySessionId(sessionId);
+                conversationHistoryRaw = transcripts
+                    .filter(turn => typeof turn.text === 'string' && turn.text.trim())
+                    .map(turn => `${turn.speaker || 'speaker'}: ${turn.text.trim()}`);
+            }
             await askRepository.addAiMessage({ sessionId, role: 'user', content: userPrompt.trim() });
             console.log(`[AskService] DB: Saved user prompt to session ${sessionId}`);
             
@@ -375,30 +384,36 @@ class AskService {
             this.state.isLoading = false;
             this.state.isStreaming = true;
             this._broadcastState();
+            let pendingLine = '';
+            const processLine = line => {
+                if (!line.startsWith('data:')) return false;
+                const data = line.slice(5).trim();
+                if (data === '[DONE]') return true;
+                try {
+                    const json = JSON.parse(data);
+                    const token = json.choices?.[0]?.delta?.content || '';
+                    if (token) {
+                        fullResponse += token;
+                        this.state.currentResponse = fullResponse;
+                        this._broadcastState();
+                    }
+                } catch {
+                    // Ignore non-content events; incomplete lines remain buffered below.
+                }
+                return false;
+            };
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.substring(6);
-                        if (data === '[DONE]') {
-                            return; 
-                        }
-                        try {
-                            const json = JSON.parse(data);
-                            const token = json.choices[0]?.delta?.content || '';
-                            if (token) {
-                                fullResponse += token;
-                                this.state.currentResponse = fullResponse;
-                                this._broadcastState();
-                            }
-                        } catch (error) {
-                        }
-                    }
+                pendingLine += done ? decoder.decode() : decoder.decode(value, { stream: true });
+                let newline;
+                while ((newline = pendingLine.indexOf('\n')) !== -1) {
+                    const line = pendingLine.slice(0, newline).replace(/\r$/, '');
+                    pendingLine = pendingLine.slice(newline + 1);
+                    if (processLine(line)) return;
+                }
+                if (done) {
+                    if (pendingLine.trim()) processLine(pendingLine);
+                    break;
                 }
             }
         } catch (streamError) {
