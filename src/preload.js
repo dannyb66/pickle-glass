@@ -198,6 +198,21 @@ contextBridge.exposeInMainWorld('api', {
     removeAllSummaryUpdateListeners: () => ipcRenderer.removeAllListeners('summary-update')
   },
 
+  interview: {
+    open: () => ipcRenderer.invoke('interview:open'),
+    onOwnerChanging: callback => ipcRenderer.on('interview:owner-changing', callback),
+    onUserChanged: callback => ipcRenderer.on('user-state-changed', callback),
+    list: () => ipcRenderer.invoke('interview:list'),
+    save: (profile) => ipcRenderer.invoke('interview:save', profile),
+    select: (id) => ipcRenderer.invoke('interview:select', id),
+    remove: (id) => ipcRenderer.invoke('interview:remove', id),
+    preview: (id) => ipcRenderer.invoke('interview:preview', id),
+    importFile: () => ipcRenderer.invoke('interview:import'),
+    fetchJD: (url) => ipcRenderer.invoke('interview:fetch-jd', url),
+    start: () => ipcRenderer.invoke('interview:start'),
+    stop: () => ipcRenderer.invoke('interview:stop')
+  },
+
   // src/ui/settings/SettingsView.js
   settingsView: {
     // User & Auth

@@ -22,6 +22,7 @@ const util = require('util');
 const execFile = util.promisify(require('child_process').execFile);
 const { desktopCapturer } = require('electron');
 const modelStateService = require('../common/services/modelStateService');
+const interviewContext = require('../common/services/interviewContextService');
 
 // Try to load sharp, but don't fail if it's not available
 let sharp;
@@ -126,6 +127,10 @@ async function captureScreenshot(options = {}) {
 class AskService {
     constructor() {
         this.abortController = null;
+        this.requestSessionId = null;
+        interviewContext.on('invalidated', sessions => {
+            if (sessions.includes(this.requestSessionId)) this.abortController?.abort('Interview context deleted');
+        });
         this.state = {
             isVisible: false,
             isLoading: false,
@@ -240,6 +245,8 @@ class AskService {
             console.log(`[AskService] 🤖 Processing message: ${userPrompt.substring(0, 50)}...`);
 
             sessionId = await sessionRepository.getOrCreateActive('ask');
+            this.requestSessionId = sessionId;
+            const interview = interviewContext.context(sessionId);
             // Normal Ask requests include captured audio from this active session.
             // An explicit array (including [] for screen-only Ask) remains authoritative.
             if (!Array.isArray(conversationHistoryRaw)) {
@@ -263,7 +270,7 @@ class AskService {
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
-            const systemPrompt = getSystemPrompt('pickle_glass_analysis', conversationHistory, false);
+            const systemPrompt = getSystemPrompt('pickle_glass_analysis', interview.context ? '' : conversationHistory, false) + (interview.policy ? `\n\n${interview.policy}` : '');
 
             const messages = [
                 { role: 'system', content: systemPrompt },
@@ -275,8 +282,10 @@ class AskService {
                 },
             ];
 
+            const currentMessage = messages[1];
+            if (interview.context) messages.splice(1, 0, interview.context, { role: 'user', content: `Recent conversation (observations):\n${conversationHistory}` });
             if (screenshotBase64) {
-                messages[1].content.push({
+                currentMessage.content.push({
                     type: 'image_url',
                     image_url: { url: `data:image/jpeg;base64,${screenshotBase64}` },
                 });
@@ -292,6 +301,8 @@ class AskService {
             });
 
             try {
+                interviewContext.snapshot(sessionId);
+                if (signal.aborted) throw new Error('Request cancelled.');
                 const response = await streamingLLM.streamChat(messages);
                 const askWin = getWindowPool()?.get('ask');
 
@@ -302,6 +313,7 @@ class AskService {
                 }
 
                 const reader = response.body.getReader();
+                if (signal.aborted) { await reader.cancel(); throw new Error('Request cancelled.'); }
                 signal.addEventListener('abort', () => {
                     console.log(`[AskService] Aborting stream reader. Reason: ${signal.reason}`);
                     reader.cancel(signal.reason).catch(() => { /* 이미 취소된 경우의 오류는 무시 */ });
@@ -316,13 +328,9 @@ class AskService {
                     console.log(`[AskService] Multimodal request failed, retrying with text-only: ${multimodalError.message}`);
                     
                     // 텍스트만으로 메시지 재구성
-                    const textOnlyMessages = [
-                        { role: 'system', content: systemPrompt },
-                        {
-                            role: 'user',
-                            content: `User Request: ${userPrompt.trim()}`
-                        }
-                    ];
+                    const textOnlyMessages = messages.map(message => message === currentMessage ? { role: 'user', content: `User Request: ${userPrompt.trim()}` } : message);
+                    interviewContext.snapshot(sessionId);
+                    if (signal.aborted) throw new Error('Request cancelled.');
 
                     const fallbackResponse = await streamingLLM.streamChat(textOnlyMessages);
                     const askWin = getWindowPool()?.get('ask');
@@ -334,6 +342,7 @@ class AskService {
                     }
 
                     const fallbackReader = fallbackResponse.body.getReader();
+                    if (signal.aborted) { await fallbackReader.cancel(); throw new Error('Request cancelled.'); }
                     signal.addEventListener('abort', () => {
                         console.log(`[AskService] Aborting fallback stream reader. Reason: ${signal.reason}`);
                         fallbackReader.cancel(signal.reason).catch(() => {});
@@ -393,6 +402,7 @@ class AskService {
                     const json = JSON.parse(data);
                     const token = json.choices?.[0]?.delta?.content || '';
                     if (token) {
+                        if (signal.aborted) return;
                         fullResponse += token;
                         this.state.currentResponse = fullResponse;
                         this._broadcastState();
@@ -426,11 +436,14 @@ class AskService {
                 }
             }
         } finally {
-            this.state.isStreaming = false;
-            this.state.currentResponse = fullResponse;
-            this._broadcastState();
-            if (fullResponse) {
+            if (!signal.aborted) {
+                this.state.isStreaming = false;
+                this.state.currentResponse = fullResponse;
+                this._broadcastState();
+            }
+            if (fullResponse && !signal.aborted) {
                  try {
+                    interviewContext.snapshot(sessionId);
                     await askRepository.addAiMessage({ sessionId, role: 'assistant', content: fullResponse });
                     console.log(`[AskService] DB: Saved partial or full assistant response to session ${sessionId} after stream ended.`);
                 } catch(dbError) {

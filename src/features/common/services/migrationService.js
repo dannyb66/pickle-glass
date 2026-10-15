@@ -57,7 +57,7 @@ async function checkAndRunMigration(firebaseUser) {
             }
         }
         
-        const localSessions = await sqliteSessionRepo.getAllByUserId(firebaseUser.uid);
+        const localSessions = (await sqliteSessionRepo.getAllByUserId(firebaseUser.uid)).filter(session => !require('./interviewContextService').isInterviewSession(session.id));
         console.log(`[Migration Phase 1] Found ${localSessions.length} sessions.`);
         for (const session of localSessions) {
             const sessionRef = doc(db, 'sessions', session.id);
