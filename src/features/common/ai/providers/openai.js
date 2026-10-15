@@ -41,115 +41,86 @@ class OpenAIProvider {
  * @param {string} [opts.portkeyVirtualKey] - Portkey virtual key
  * @returns {Promise<object>} STT session
  */
-async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
-  const keyType = usePortkey ? 'vKey' : 'apiKey';
+async function createSTT({ apiKey, language = 'en', model = 'gpt-4o-mini-transcribe', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
   const key = usePortkey ? (portkeyVirtualKey || apiKey) : apiKey;
-
-  const wsUrl = keyType === 'apiKey'
-    ? 'wss://api.openai.com/v1/realtime?intent=transcription'
-    : 'wss://api.portkey.ai/v1/realtime?intent=transcription';
-
-  const headers = keyType === 'apiKey'
-    ? {
-        'Authorization': `Bearer ${key}`,
-        'OpenAI-Beta': 'realtime=v1',
-      }
-    : {
-        'x-portkey-api-key': 'gRv2UGRMq6GGLJ8aVEB4e7adIewu',
-        'x-portkey-virtual-key': key,
-        'OpenAI-Beta': 'realtime=v1',
-      };
-
+  const wsUrl = usePortkey
+    ? 'wss://api.portkey.ai/v1/realtime?intent=transcription'
+    : 'wss://api.openai.com/v1/realtime?intent=transcription';
+  const headers = usePortkey
+    ? { 'x-portkey-api-key': 'gRv2UGRMq6GGLJ8aVEB4e7adIewu', 'x-portkey-virtual-key': key }
+    : { Authorization: `Bearer ${key}` };
   const ws = new WebSocket(wsUrl, { headers });
 
   return new Promise((resolve, reject) => {
+    let ready = false;
+    let settled = false;
+    const fail = error => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(initializationTimeout);
+        reject(error);
+        ws.close();
+      }
+    };
+    const initializationTimeout = setTimeout(() => {
+      fail(new Error('OpenAI transcription session configuration timed out.'));
+    }, 20000);
+    initializationTimeout.unref?.();
+    const session = {
+      sendRealtimeInput(audioData) {
+        if (!ready || ws.readyState !== WebSocket.OPEN) {
+          throw new Error('OpenAI transcription session is not ready.');
+        }
+        ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: audioData }));
+      },
+      keepAlive() {
+        if (ready && ws.readyState === WebSocket.OPEN) ws.ping();
+      },
+      close() {
+        ready = false;
+        clearTimeout(initializationTimeout);
+        ws.close(1000, 'Client initiated close.');
+      },
+    };
+
     ws.onopen = () => {
-      console.log("WebSocket session opened.");
-
-      const sessionConfig = {
-        type: 'transcription_session.update',
+      ws.send(JSON.stringify({
+        type: 'session.update',
         session: {
-          input_audio_format: 'pcm16',
-          input_audio_transcription: {
-            model: 'gpt-4o-mini-transcribe',
-            prompt: config.prompt || '',
-            language: language || 'en'
-          },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 200,
-            silence_duration_ms: 100,
-          },
-          input_audio_noise_reduction: {
-            type: 'near_field'
-          }
-        }
-      };
-      
-      ws.send(JSON.stringify(sessionConfig));
-
-      // Helper to periodically keep the websocket alive
-      const keepAlive = () => {
-        try {
-          if (ws.readyState === WebSocket.OPEN) {
-            // The ws library supports native ping frames which are ideal for heart-beats
-            ws.ping();
-          }
-        } catch (err) {
-          console.error('[OpenAI STT] keepAlive error:', err.message);
-        }
-      };
-
-      resolve({
-        sendRealtimeInput: (audioData) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            const message = {
-              type: 'input_audio_buffer.append',
-              audio: audioData
-            };
-            ws.send(JSON.stringify(message));
-          }
+          type: 'transcription',
+          audio: { input: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            transcription: { model, prompt: config.prompt || '', language: language || 'en' },
+            turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 200, silence_duration_ms: 100 },
+            noise_reduction: { type: 'near_field' },
+          } },
         },
-        // Expose keepAlive so higher-level services can schedule heart-beats
-        keepAlive,
-        close: () => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'session.close' }));
-            ws.onmessage = ws.onerror = () => {};  // 핸들러 제거
-            ws.close(1000, 'Client initiated close.');
-          }
-        }
-      });
+      }));
     };
-
-    ws.onmessage = (event) => {
-      // ── 종료·하트비트 패킷 필터링 ──────────────────────────────
+    ws.onmessage = event => {
       if (!event.data || event.data === 'null' || event.data === '[DONE]') return;
-
-      let msg;
-      try { msg = JSON.parse(event.data); }
-      catch { return; }                       // JSON 파싱 실패 무시
-
-      if (!msg || typeof msg !== 'object') return;
-
-      msg.provider = 'openai';                // ← 항상 명시
-      callbacks.onmessage?.(msg);
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error.message);
-      if (callbacks && callbacks.onerror) {
-        callbacks.onerror(error);
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (!message || typeof message !== 'object') return;
+      message.provider = 'openai';
+      if (message.type === 'error') {
+        fail(new Error(message.error?.message || 'OpenAI transcription configuration rejected.'));
+      } else if (message.type === 'session.updated' && message.session?.type === 'transcription' && !settled) {
+        ready = true;
+        settled = true;
+        clearTimeout(initializationTimeout);
+        resolve(session);
       }
-      reject(error);
+      callbacks.onmessage?.(message);
     };
-
-    ws.onclose = (event) => {
-      console.log(`WebSocket closed: ${event.code} ${event.reason}`);
-      if (callbacks && callbacks.onclose) {
-        callbacks.onclose(event);
-      }
+    ws.onerror = error => {
+      fail(new Error(error.message || 'OpenAI transcription connection failed.'));
+      callbacks.onerror?.(error);
+    };
+    ws.onclose = event => {
+      ready = false;
+      fail(new Error('OpenAI transcription session closed before configuration was accepted.'));
+      callbacks.onclose?.(event);
     };
   });
 }

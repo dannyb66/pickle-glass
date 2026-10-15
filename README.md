@@ -132,3 +132,18 @@ We have a list of [help wanted](https://github.com/pickle-com/glass/issues?q=is%
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=pickle-com/glass&type=Date)](https://www.star-history.com/#pickle-com/glass&Date)
+
+### Development checks
+
+Use Node 20 and run `npm test` for the offline session-context and OpenAI transcription lifecycle regressions. `npm run build:renderer` verifies the desktop renderer bundle. The tests use synthetic transcripts and sockets and make no provider calls.
+
+On macOS, launch the development Electron app through Launch Services when checking Screen & System Audio Recording permission:
+
+```sh
+npm run build:renderer
+open -n -a "$PWD/node_modules/electron/dist/Electron.app" --args "$PWD"
+```
+
+Enable this Electron app in System Settings → Privacy & Security → Screen & System Audio Recording, then restart it. Launching its binary directly from a terminal or coding app can use that host's recording permission instead.
+
+Ordinary Ask requests include stored transcripts from the active session along with the current screenshot. Explicit screen-only requests omit audio. Streamed answers preserve events split across network chunks and UTF-8 boundaries. OpenAI transcription uses the GA `session.update` format and reports readiness after the server acknowledges configuration; a socket opening alone is insufficient. See the [OpenAI Realtime transcription reference](https://developers.openai.com/api/reference/resources/realtime/client-events).
