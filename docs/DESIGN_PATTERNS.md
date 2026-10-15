@@ -12,7 +12,7 @@ These are the fundamental rules that govern the entire application.
 
 1.  **Centralized Data Logic**: All data persistence logic (reading from or writing to a database) is centralized within the **Electron Main Process**. The UI layers (both Electron's renderer and the web dashboard) are forbidden from accessing data sources directly.
 2.  **Feature-Based Modularity**: Code is organized by feature (`src/features`) to promote encapsulation and separation of concerns. A new feature should be self-contained within its own directory.
-3.  **Dual-Database Repositories**: The data access layer uses a **Repository Pattern** that abstracts away the underlying database. Every repository that handles user data **must** have two implementations: one for the local `SQLite` database and one for the cloud `Firebase` database. Both must expose an identical interface.
+3.  **Dual-Database Repositories**: The data access layer uses a **Repository Pattern** that abstracts away the underlying database. Generic user-data repositories have local `SQLite` and cloud `Firebase` implementations with identical interfaces. Saved interview profiles and their pinned session records are an explicit local-only exception: they remain in SQLite even when signed in. See [saved interview profiles](interview-context.md#local-data-and-deletion).
 4.  **AI Provider Abstraction**: AI model interactions are abstracted using a **Factory Pattern**. To add a new provider (e.g., a new LLM), you only need to create a new provider module that conforms to the base interface in `src/common/ai/providers/` and register it in the `factory.js`.
 5.  **Single Source of Truth for Schema**: The schema for the local SQLite database is defined in a single location: `src/common/config/schema.js`. Any change to the database structure **must** be updated here.
 6.  **Encryption by Default**: All sensitive user data **must** be encrypted before being persisted to Firebase. This includes, but is not limited to, API keys, conversation titles, transcription text, and AI-generated summaries. This is handled automatically by the `createEncryptedConverter` Firestore helper.
@@ -40,12 +40,12 @@ The Electron app's logic is primarily built on a **Service-Repository** pattern,
 The application dynamically switches between using the local SQLite database and the cloud-based Firebase Firestore.
 
 -   **SQLite**: The default data store for all users, especially those not logged in. This ensures full offline functionality. The low-level client is `src/common/services/sqliteClient.js`.
--   **Firebase**: Used exclusively for users who are authenticated. This enables data synchronization across devices and with the web dashboard.
+-   **Firebase**: Used for authenticated users' generic sessions. This enables data synchronization across devices and with the web dashboard. Interview profiles, snapshots, transcripts, Ask answers and summaries stay local and are excluded from Firebase session migration.
 
 The selection mechanism is a sophisticated **Factory and Adapter Pattern** located in the `index.js` file of each repository directory (e.g., `src/common/repositories/session/index.js`).
 
-**How it works:**
-1.  **Service Call**: A service makes a call to a high-level repository function, like `sessionRepository.create('ask')`. The service is unaware of the user's state or the underlying database.
+**How generic-session routing works:**
+1.  **Service Call**: A service makes a call to a high-level repository function, like `sessionRepository.create('ask')`. The generic-session service is unaware of the user's state or the underlying database. Interview startup instead creates a local session and pins the selected profile revision; subsequent repository calls use that session binding to keep its records in SQLite.
 2.  **Repository Selection (Factory)**: The `index.js` adapter logic first determines which underlying repository to use. It imports and calls `authService.getCurrentUser()` to check the login state. If the user is logged in, it selects `firebase.repository.js`; otherwise, it defaults to `sqlite.repository.js`.
 3.  **UID Injection (Adapter)**: The adapter then retrieves the current user's ID (`uid`) from `authService.getCurrentUserId()`. It injects this `uid` into the actual, low-level repository call (e.g., `firebaseRepository.create(uid, 'ask')`).
 4.  **Execution**: The selected repository (`sqlite` or `firebase`) executes the data operation.
@@ -55,6 +55,8 @@ This powerful pattern accomplishes two critical goals:
 -   It frees the services from the responsibility of managing and passing user IDs for every database query.
 
 **Visualizing the Data Flow**
+
+This diagram describes generic sessions. For a bound interview session, the repository factory selects SQLite before checking login state; the interview profile repository itself has no Firebase implementation.
 
 ```mermaid
 graph TD

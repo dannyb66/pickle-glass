@@ -22,11 +22,11 @@ JD fetching accepts public HTTPS, rejects credentials/custom ports/private netwo
 
 ## Local data and deletion
 
-Profiles, selection, immutable session snapshots, and interview transcripts/answers are stored in the app's local SQLite database. Interview sessions use local repositories even when signed in; they are excluded from the existing Firebase session migration. Existing generic meetings retain their previous behavior. The existing signed-in web history view does not list these local interview sessions; their local records remain in SQLite. This feature does not add at-rest encryption or a new cloud backup.
+Profiles, selection, immutable session snapshots, and interview transcripts/answers are stored in the app's local SQLite database. Interview sessions use local repositories even when signed in; they are excluded from the existing Firebase session migration. Existing generic meetings retain their previous behavior. The existing signed-in web history view does not list these local interview sessions; their local records remain in SQLite. This feature does not add at-rest encryption or a new cloud backup. The [repository routing overview](DESIGN_PATTERNS.md#2-data-persistence-the-dual-repository-factory) explains the local-only exception.
 
 Starting a session permits the configured audio provider to receive captured audio, and Ask/Summary permit the configured language provider to receive the pinned sources and current observations. Ask additionally sends its captured screenshot when supported. Preview and save alone do not upload the documents. Use preparation or otherwise permitted sessions and source material you intend to share with the chosen provider.
 
-Deleting a profile removes its stored text and snapshots and stops an active session using it. An invalidation marker prevents deleted context from falling through to generic/cloud routing. Previous generated answers may still contain source facts and are not automatically erased. Deletion cannot retract content already sent to a provider. Account transitions cancel active source-bearing requests, stop capture and clear the profile editor; foreign-owner session IDs are rejected.
+Deleting a profile removes its stored text and snapshots and stops an active session using it. An invalidation marker prevents deleted context from falling through to generic/cloud routing. Previous generated answers may still contain source facts and are not automatically erased. Deletion cannot retract content already sent to a provider. Account transitions stop capture, clear the profile editor and prevent late results from being shown or saved in another account; requests already sent to a provider may still complete there. Foreign-owner session IDs are rejected.
 
 ## Validation
 
@@ -44,3 +44,5 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/Electron.app/Contents/MacOS/El
 ```
 
 The regression suite covers confirmation, source limits, private-DNS/redirect/deadline rejection, snapshots and deletion, owner isolation, Ask image fallback and Summary context delivery, late STT callbacks, cancelled socket creation, and transcript/session changes during asynchronous persistence. Real native UI and provider/audio/screen acceptance use separate synthetic fixtures and ephemeral credentials; they are not replaced by these unit tests.
+
+Controlled native validation used synthetic profiles, macOS system audio, screenshots and GPT-4.1. Physical microphone hardware, echo cancellation and other providers remain unverified by that fixture; it is not a general system-design answer-quality benchmark.
