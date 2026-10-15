@@ -147,3 +147,7 @@ open -n -a "$PWD/node_modules/electron/dist/Electron.app" --args "$PWD"
 Enable this Electron app in System Settings → Privacy & Security → Screen & System Audio Recording, then restart it. Launching its binary directly from a terminal or coding app can use that host's recording permission instead.
 
 Ordinary Ask requests include stored transcripts from the active session along with the current screenshot. Explicit screen-only requests omit audio. Streamed answers preserve events split across network chunks and UTF-8 boundaries. OpenAI transcription uses the GA `session.update` format and reports readiness after the server acknowledges configuration; a socket opening alone is insufficient. See the [OpenAI Realtime transcription reference](https://developers.openai.com/api/reference/resources/realtime/client-events).
+
+### Saved interview context
+
+Desktop **Settings → Interview Profiles** saves separate resume/JD/system-design-material configurations. Review the chosen resume, preview the packet, select a configuration and start a fresh interview; Ask and Summary share its pinned version. Profiles and interview session records remain local, including when signed in. See [the workflow, source limits and deletion behavior](docs/interview-context.md).
