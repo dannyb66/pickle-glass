@@ -1,12 +1,15 @@
 {
     "name": "pickle-glass",
     "productName": "Glass",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "description": "Cl*ely for Free",
     "main": "src/index.js",
     "scripts": {
         "setup": "npm install && cd pickleglass_web && npm install && npm run build && cd .. && npm start",
         "start": "npm run build:renderer && electron .",
+        "start:debug": "npm run build:renderer && electron . --devtools",
+        "package:mac:local": "npm run build:all && node scripts/stage-mac.cjs && electron-builder --config electron-builder.local.yml --mac --arm64 --dir --publish never && node scripts/sign-mac.cjs",
+        "install:mac": "npm run package:mac:local && node scripts/install-mac.cjs",
         "package": "npm run build:all && electron-builder --dir",
         "make": "npm run build:renderer && electron-forge make",
         "build": "npm run build:all && electron-builder --config electron-builder.yml --publish never",
