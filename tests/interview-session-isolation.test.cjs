@@ -13,7 +13,7 @@ const later = () => { let resolve; const promise = new Promise(r => { resolve = 
 test('Summary pins owner/session/generation before awaits and drops a switched request before sending', async () => {
     const pending = later(); const calls = []; let owner = 'owner-a';
     const Summary = load('features/listen/summary/summaryService.js', {
-        electron: {}, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic' },
+        electron: {}, '../../../window/windowManager': { windowPool: new Map() }, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic' },
         '../../common/ai/factory': { createLLM: () => ({ chat: async messages => { calls.push(messages); return { content: 'response' }; } }) },
         '../../common/repositories/session': { touch: async () => {} }, './repositories': { saveSummary: () => assert.fail('old summary must not save') },
         '../../common/services/modelStateService': { getCurrentModelInfo: () => pending.promise },
@@ -27,7 +27,7 @@ test('Summary pins owner/session/generation before awaits and drops a switched r
 test('Summary uses the exact same pinned source packet as Ask and never puts source content in system policy', async () => {
     const calls = []; const packet = '{"profileId":"Orchid","interview_sources":["resume","jd","reference"]}';
     const Summary = load('features/listen/summary/summaryService.js', {
-        electron: {}, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic {{CONVERSATION_HISTORY}}' },
+        electron: {}, '../../../window/windowManager': { windowPool: new Map() }, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic {{CONVERSATION_HISTORY}}' },
         '../../common/ai/factory': { createLLM: () => ({ chat: async messages => { calls.push(messages); return { content: '**Summary Overview**\n- Orchid result' }; } }) },
         '../../common/repositories/session': { touch: async () => {} }, './repositories': { saveSummary() {} },
         '../../common/services/modelStateService': { getCurrentModelInfo: async () => ({ apiKey: 'synthetic', provider: 'test', model: 'test' }) },

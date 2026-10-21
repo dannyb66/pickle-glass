@@ -1,6 +1,36 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai")
 const { GoogleGenAI } = require("@google/genai")
 
+
+// Retain every source packet and conversation turn for both response paths.
+function convertMessages(messages) {
+  const instructions = []
+  const contents = []
+  for (const message of messages) {
+    if (message.role === "system") {
+      instructions.push(message.content)
+      continue
+    }
+    const parts = (Array.isArray(message.content) ? message.content : [message.content]).flatMap(part => {
+      if (typeof part === "string") return [{ text: part }]
+      if (part?.type === "text") return [{ text: part.text }]
+      if (part?.type === "image_url") {
+        const match = /^data:(image\/[\w.+-]+);base64,(.+)$/s.exec(part.image_url?.url || "")
+        if (!match) throw new Error("Gemini requires an inline image with a valid MIME type.")
+        return [{ inlineData: { mimeType: match[1], data: match[2] } }]
+      }
+      return []
+    })
+    if (!parts.length) continue
+    const role = message.role === "assistant" ? "model" : "user"
+    const previous = contents[contents.length - 1]
+    if (previous?.role === role) previous.parts.push({ text: "\n\n" }, ...parts)
+    else contents.push({ role, parts })
+  }
+  if (!contents.length) throw new Error("A message is required for Gemini.")
+  return { systemInstruction: instructions.join("\n\n"), contents }
+}
+
 class GeminiProvider {
     static async validateApiKey(key) {
         if (!key || typeof key !== 'string') {
@@ -117,34 +147,7 @@ function createLLM({ apiKey, model = "gemini-2.5-flash", temperature = 0.7, maxT
     },
 
     chat: async (messages) => {
-      // Filter out any system prompts that might be causing JSON responses
-      let systemInstruction = ""
-      const history = []
-      let lastMessage
-
-      messages.forEach((msg, index) => {
-        if (msg.role === "system") {
-          // Clean system instruction - avoid JSON formatting requests
-          systemInstruction = msg.content
-            .replace(/respond in json/gi, "")
-            .replace(/format.*json/gi, "")
-            .replace(/return.*json/gi, "")
-
-          // Add explicit instruction for natural text
-          if (!systemInstruction.includes("respond naturally")) {
-            systemInstruction += "\n\nRespond naturally in plain text, not in JSON or structured format."
-          }
-          return
-        }
-
-        const role = msg.role === "user" ? "user" : "model"
-
-        if (index === messages.length - 1) {
-          lastMessage = msg
-        } else {
-          history.push({ role, parts: [{ text: msg.content }] })
-        }
-      })
+      const { systemInstruction, contents } = convertMessages(messages)
 
       const geminiModel = client.getGenerativeModel({
         model: model,
@@ -159,34 +162,7 @@ function createLLM({ apiKey, model = "gemini-2.5-flash", temperature = 0.7, maxT
         },
       })
 
-      const chat = geminiModel.startChat({
-        history: history,
-      })
-
-      let content = lastMessage.content
-
-      // Handle multimodal content
-      if (Array.isArray(content)) {
-        const geminiContent = []
-        for (const part of content) {
-          if (typeof part === "string") {
-            geminiContent.push(part)
-          } else if (part.type === "text") {
-            geminiContent.push(part.text)
-          } else if (part.type === "image_url" && part.image_url) {
-            const base64Data = part.image_url.url.split(",")[1]
-            geminiContent.push({
-              inlineData: {
-                mimeType: "image/png",
-                data: base64Data,
-              },
-            })
-          }
-        }
-        content = geminiContent
-      }
-
-      const result = await chat.sendMessage(content)
+      const result = await geminiModel.generateContent({ contents })
       const response = await result.response
 
       // Return plain text content
@@ -208,24 +184,7 @@ function createStreamingLLM({ apiKey, model = "gemini-2.5-flash", temperature = 
     streamChat: async (messages) => {
       console.log("[Gemini Provider] Starting streaming request")
 
-      let systemInstruction = ""
-      const nonSystemMessages = []
-
-      for (const msg of messages) {
-        if (msg.role === "system") {
-          // Clean and modify system instruction
-          systemInstruction = msg.content
-            .replace(/respond in json/gi, "")
-            .replace(/format.*json/gi, "")
-            .replace(/return.*json/gi, "")
-
-          if (!systemInstruction.includes("respond naturally")) {
-            systemInstruction += "\n\nRespond naturally in plain text, not in JSON or structured format."
-          }
-        } else {
-          nonSystemMessages.push(msg)
-        }
-      }
+      const { systemInstruction, contents } = convertMessages(messages)
 
       const geminiModel = client.getGenerativeModel({
         model: model,
@@ -243,46 +202,7 @@ function createStreamingLLM({ apiKey, model = "gemini-2.5-flash", temperature = 
       const stream = new ReadableStream({
         async start(controller) {
           try {
-            const lastMessage = nonSystemMessages[nonSystemMessages.length - 1]
-            let geminiContent = []
-
-            if (Array.isArray(lastMessage.content)) {
-              for (const part of lastMessage.content) {
-                if (typeof part === "string") {
-                  geminiContent.push(part)
-                } else if (part.type === "text") {
-                  geminiContent.push(part.text)
-                } else if (part.type === "image_url" && part.image_url) {
-                  const base64Data = part.image_url.url.split(",")[1]
-                  geminiContent.push({
-                    inlineData: {
-                      mimeType: "image/png",
-                      data: base64Data,
-                    },
-                  })
-                }
-              }
-            } else {
-              geminiContent = [lastMessage.content]
-            }
-
-            const contentParts = geminiContent.map((part) => {
-              if (typeof part === "string") {
-                return { text: part }
-              } else if (part.inlineData) {
-                return { inlineData: part.inlineData }
-              }
-              return part
-            })
-
-            const result = await geminiModel.generateContentStream({
-              contents: [
-                {
-                  role: "user",
-                  parts: contentParts,
-                },
-              ],
-            })
+            const result = await geminiModel.generateContentStream({ contents })
 
             for await (const chunk of result.stream) {
               const chunkText = chunk.text() || ""

@@ -200,7 +200,7 @@ export class ListenView extends LitElement {
             gap: 4px;
             align-items: center;
             flex-shrink: 0;
-            width: 120px;
+            width: auto;
             justify-content: flex-end;
             box-sizing: border-box;
             padding: 4px;
@@ -283,6 +283,16 @@ export class ListenView extends LitElement {
             transform: translate(-50%, -50%) scale(1);
         }
 
+        .insights-controls { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,.1); }
+        .analysis-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+        .analysis-actions select, .analyze-now { border: 1px solid rgba(255,255,255,.25); border-radius: 5px;
+            background: #202327; color: white; font: 11px system-ui; padding: 5px 6px; }
+        .analysis-actions label { display: flex; align-items: center; gap: 3px; font-size: 11px; }
+        .analysis-actions input { margin: 0; }
+        .analyze-now { cursor: pointer; }
+        .analyze-now:disabled { opacity: .5; cursor: default; }
+        .analysis-meta { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; font-size: 10px; line-height: 1.4; color: #cbd5e1; }
+        .analysis-error { color: #fca5a5; }
         .timer {
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 10px;
@@ -420,6 +430,9 @@ export class ListenView extends LitElement {
 
     static properties = {
         viewMode: { type: String },
+        analysisState: { type: Object, state: true },
+        analysisScope: { type: String, state: true },
+        actionError: { type: String, state: true },
         isHovering: { type: Boolean },
         isAnimating: { type: Boolean },
         copyState: { type: String },
@@ -434,6 +447,10 @@ export class ListenView extends LitElement {
         this.isSessionActive = false;
         this.hasCompletedRecording = false;
         this.viewMode = 'insights';
+        this.analysisState = { phase: 'idle', sessionId: null, autoEnabled: true, data: null };
+        this.analysisScope = 'entire';
+        this.actionError = '';
+        this.ownerEpoch = 0;
         this.isHovering = false;
         this.isAnimating = false;
         this.elapsedTime = '00:00';
@@ -454,7 +471,25 @@ export class ListenView extends LitElement {
             this.startTimer();
         }
         if (window.api) {
-            window.api.listenView.onSessionStateChanged((event, { isActive }) => {
+            this._insightsStateListener = (event, state) => { this.analysisState = state; this.actionError = ''; };
+            window.api.insights.onState(this._insightsStateListener);
+            this._reloadInsights = async () => {
+                const epoch = this.ownerEpoch;
+                try { const state = await window.api.insights.getState(); if (epoch === this.ownerEpoch) this.analysisState = state; }
+                catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
+            };
+            this._ownerChanging = () => {
+                this.ownerEpoch++;
+                this.actionError = '';
+                this.analysisState = { phase: 'idle', sessionId: null, autoEnabled: true, data: null };
+                this.shadowRoot.querySelector('summary-view')?.resetAnalysis();
+                this.shadowRoot.querySelector('stt-view')?.resetTranscript();
+                this.stopTimer(); this.isSessionActive = false;
+            };
+            window.api.interview.onOwnerChanging(this._ownerChanging);
+            window.api.common.onUserStateChanged(this._reloadInsights);
+            this._reloadInsights();
+            this._sessionStateListener = (event, { isActive }) => {
                 const wasActive = this.isSessionActive;
                 this.isSessionActive = isActive;
 
@@ -475,13 +510,21 @@ export class ListenView extends LitElement {
                     this.stopTimer();
                     this.requestUpdate();
                 }
-            });
+            };
+            window.api.listenView.onSessionStateChanged(this._sessionStateListener);
         }
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         this.stopTimer();
+        this.ownerEpoch++;
+        if (window.api) {
+            window.api.insights.removeOnState(this._insightsStateListener);
+            window.api.listenView.removeOnSessionStateChanged(this._sessionStateListener);
+            window.api.interview.removeOnOwnerChanging(this._ownerChanging);
+            window.api.common.removeOnUserStateChanged(this._reloadInsights);
+        }
 
         if (this.adjustHeightThrottle) {
             clearTimeout(this.adjustHeightThrottle);
@@ -528,7 +571,8 @@ export class ListenView extends LitElement {
 
                 const contentHeight = activeContent.scrollHeight;
 
-                const idealHeight = topBarHeight + contentHeight;
+                const controlsHeight = this.shadowRoot.querySelector('.insights-controls')?.offsetHeight || 0;
+                const idealHeight = topBarHeight + controlsHeight + contentHeight;
 
                 const targetHeight = Math.min(700, idealHeight);
 
@@ -541,6 +585,20 @@ export class ListenView extends LitElement {
             .catch(error => {
                 console.error('Error in adjustWindowHeight:', error);
             });
+    }
+
+    async analyzeNow() {
+        const epoch = this.ownerEpoch;
+        this.actionError = '';
+        try {
+            const result = await window.api.insights.analyze(this.analysisScope);
+            if (epoch === this.ownerEpoch && !result.success) this.actionError = result.error;
+        } catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
+    }
+
+    async toggleAutomatic(event) {
+        try { await window.api.insights.setAuto(event.target.checked); }
+        catch (error) { this.actionError = error.message; }
     }
 
     toggleViewMode() {
@@ -608,7 +666,7 @@ export class ListenView extends LitElement {
     updated(changedProperties) {
         super.updated(changedProperties);
 
-        if (changedProperties.has('viewMode')) {
+        if (changedProperties.has('viewMode') || changedProperties.has('analysisState') || changedProperties.has('actionError')) {
             this.adjustWindowHeight();
         }
     }
@@ -624,6 +682,8 @@ export class ListenView extends LitElement {
     }
 
     render() {
+        const state = this.analysisState;
+        const busy = state.phase === 'queued' || state.phase === 'analyzing';
         const displayText = this.isHovering
             ? this.viewMode === 'transcript'
                 ? 'Copy Transcript'
@@ -656,6 +716,8 @@ export class ListenView extends LitElement {
                                       <span>Show Insights</span>
                                   `}
                         </button>
+                        <button class="toggle-button" title="Hide Live Insights without stopping recording" aria-label="Hide Live Insights"
+                            @click=${() => window.api.insights.setVisible(false)}>×</button>
                         <button
                             class="copy-button ${this.copyState === 'copied' ? 'copied' : ''}"
                             @click=${this.handleCopy}
@@ -673,12 +735,34 @@ export class ListenView extends LitElement {
                     </div>
                 </div>
 
+                <div class="insights-controls">
+                    <div class="analysis-actions">
+                        <select aria-label="Analysis scope" .value=${this.analysisScope} ?disabled=${busy}
+                            @change=${event => { this.analysisScope = event.target.value; }}>
+                            <option value="recent">Recent conversation</option><option value="entire">Entire session</option>
+                        </select>
+                        <button class="analyze-now" ?disabled=${!state.sessionId || busy} @click=${this.analyzeNow}>${busy ? 'Analyzing…' : 'Analyze now'}</button>
+                        <label><input type="checkbox" .checked=${state.autoEnabled} @change=${this.toggleAutomatic}> Auto-update</label>
+                    </div>
+                    <div class="analysis-meta" role=${state.error || this.actionError ? 'alert' : 'status'} aria-live="polite">
+                        <span>${state.sessionId ? (state.isRecording ? 'Recording' : 'Stopped · reviewing saved session') : 'Click Listen to start a session.'}</span>
+                        ${state.contextLabel ? html`<span class="context-label">${state.contextLabel}</span>` : ''}
+                        ${busy ? html`<span>${state.phase === 'queued' ? 'Queued' : state.progress || 'Analyzing'}</span>` : ''}
+                        ${state.lastUpdated ? html`<span>Updated ${new Date(state.lastUpdated).toLocaleTimeString()} · ${state.scope === 'entire' ? 'Entire session' : 'Recent'}: ${state.coveredTurns}/${state.totalTurns} segments${state.condensed ? ' · condensed in parts' : ''}</span>` : ''}
+                        ${state.error || this.actionError ? html`<span class="analysis-error">${this.actionError || state.error}</span>` : ''}
+                    </div>
+                </div>
+
                 <stt-view 
                     .isVisible=${this.viewMode === 'transcript'}
                     @stt-messages-updated=${this.handleSttMessagesUpdated}
                 ></stt-view>
 
-                <summary-view 
+                <summary-view
+                    @insights-content-resized=${() => this.adjustWindowHeightThrottled()}
+                    .sessionId=${state.sessionId}
+                    .structuredData=${state.data || { summary: [], topic: { header: '', bullets: [] }, actions: [], followUps: [] }}
+                    @response-font-size-changed=${() => this.adjustWindowHeight()}
                     .isVisible=${this.viewMode === 'insights'}
                     .hasCompletedRecording=${this.hasCompletedRecording}
                 ></summary-view>

@@ -177,7 +177,7 @@ let API_ORIGIN = process.env.NODE_ENV === 'development'
 
 const loadRuntimeConfig = async (): Promise<string | null> => {
   try {
-    const response = await fetch('/runtime-config.json');
+    const response = await fetch('/runtime-config.json', { cache: 'no-store' });
     if (response.ok) {
       const config = await response.json();
       console.log('✅ Runtime config loaded:', config);
@@ -586,4 +586,4 @@ export const logout = async () => {
   localStorage.removeItem('user_info');
   
   window.location.href = '/login';
-}; 
+};

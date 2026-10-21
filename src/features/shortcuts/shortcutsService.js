@@ -66,6 +66,8 @@ class ShortcutsService {
             toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
             toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
             nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+            toggleListen: isMac ? 'Cmd+Shift+L' : 'Ctrl+Shift+L',
+            toggleInsights: isMac ? 'Cmd+Shift+I' : 'Ctrl+Shift+I',
             manualScreenshot: isMac ? 'Cmd+Shift+S' : 'Ctrl+Shift+S',
             previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
@@ -92,7 +94,7 @@ class ShortcutsService {
         const defaults = this.getDefaultKeybinds();
         let needsUpdate = false;
         for (const action in defaults) {
-            if (!keybinds[action]) {
+            if (!Object.prototype.hasOwnProperty.call(keybinds, action)) {
                 keybinds[action] = defaults[action];
                 needsUpdate = true;
             }
@@ -209,6 +211,22 @@ class ShortcutsService {
             switch(action) {
                 case 'toggleVisibility':
                     callback = () => this.toggleAllWindowsVisibility();
+                    break;
+                case 'toggleListen':
+                    callback = () => {
+                        const headerWindow = this.windowPool.get('header');
+                        if (headerWindow && !headerWindow.isDestroyed()) {
+                            headerWindow.webContents.send('shortcut:listen');
+                        }
+                    };
+                    break;
+                case 'toggleInsights':
+                    callback = () => {
+                        const headerWindow = this.windowPool.get('header');
+                        if (headerWindow && !headerWindow.isDestroyed()) {
+                            headerWindow.webContents.send('shortcut:insights');
+                        }
+                    };
                     break;
                 case 'nextStep':
                     callback = () => askService.toggleAskButton(true);

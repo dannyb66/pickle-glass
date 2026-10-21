@@ -6,6 +6,7 @@ const os = require('os');
 const shortcutsService = require('../features/shortcuts/shortcutsService');
 const internalBridge = require('../bridge/internalBridge');
 const permissionRepository = require('../features/common/repositories/permission');
+const { shouldOpenDevTools } = require('../startupOptions');
 
 /* ────────────────[ GLASS BYPASS ]─────────────── */
 let liquidGlass;
@@ -482,7 +483,7 @@ function createFeatureWindows(header, namesToCreate) {
                         }
                     });
                 }
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     listen.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('listen', listen);
@@ -515,7 +516,7 @@ function createFeatureWindows(header, namesToCreate) {
                 }
                 
                 // Open DevTools in development
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     ask.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('ask', ask);
@@ -550,7 +551,7 @@ function createFeatureWindows(header, namesToCreate) {
                 }
                 windowPool.set('settings', settings);  
 
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     settings.webContents.openDevTools({ mode: 'detach' });
                 }
                 break;
@@ -588,7 +589,7 @@ function createFeatureWindows(header, namesToCreate) {
                 }
 
                 windowPool.set('shortcut-settings', shortcutEditor);
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     shortcutEditor.webContents.openDevTools({ mode: 'detach' });
                 }
                 break;
@@ -639,7 +640,7 @@ function getCurrentDisplay(window) {
 
 function createWindows() {
     const HEADER_HEIGHT        = 47;
-    const DEFAULT_WINDOW_WIDTH = 353;
+    const DEFAULT_WINDOW_WIDTH = 425;
 
     const primaryDisplay = screen.getPrimaryDisplay();
     const { y: workAreaY, width: screenWidth } = primaryDisplay.workArea;
@@ -722,8 +723,8 @@ function createWindows() {
     header.setContentProtection(isContentProtectionOn);
     header.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     
-    // Open DevTools in development
-    if (!app.isPackaged) {
+    // Developer tools are opt-in for source launches.
+    if (shouldOpenDevTools(app.isPackaged)) {
         header.webContents.openDevTools({ mode: 'detach' });
     }
 

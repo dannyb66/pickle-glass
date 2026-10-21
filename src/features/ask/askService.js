@@ -128,8 +128,11 @@ class AskService {
     constructor() {
         this.abortController = null;
         this.requestSessionId = null;
+        this.reviewSession = null;
+        internalBridge.on?.('listen:sessionStarted', () => this.clearReviewContext());
         interviewContext.on('invalidated', sessions => {
             if (sessions.includes(this.requestSessionId)) this.abortController?.abort('Interview context deleted');
+            if (sessions.includes(this.reviewSession?.id)) this.clearReviewContext();
         });
         this.state = {
             isVisible: false,
@@ -163,6 +166,8 @@ class AskService {
 
         if (askWindow && askWindow.isVisible() && hasContent) {
             this.state.showTextInput = !this.state.showTextInput;
+            // DOM focus alone cannot receive typing while another window is active.
+            if (this.state.showTextInput) askWindow.focus();
             this._broadcastState();
         } else {
             if (askWindow && askWindow.isVisible()) {
@@ -180,7 +185,22 @@ class AskService {
         }
     }
 
+    clearReviewContext() {
+        if (this.reviewSession?.id === this.requestSessionId) this.abortController?.abort('Reviewed session changed');
+        this.reviewSession = null;
+    }
+
+    async sendMessageForSession(userPrompt, sessionId) {
+        const owner = require('../common/services/authService').getCurrentUserId();
+        const session = await sessionRepository.getById(sessionId);
+        if (!session || session.uid !== owner || owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('This reviewed session is unavailable for the current account.');
+        interviewContext.snapshot(sessionId);
+        this.reviewSession = { id: sessionId, owner };
+        return this.sendMessage(userPrompt);
+    }
+
     async closeAskWindow () {
+            this.clearReviewContext();
             if (this.abortController) {
                 this.abortController.abort('Window closed by user');
                 this.abortController = null;
@@ -228,6 +248,7 @@ class AskService {
             isStreaming: false,
             currentQuestion: userPrompt,
             currentResponse: '',
+            contextLabel: '',
             showTextInput: false,
         };
         this._broadcastState();
@@ -244,9 +265,18 @@ class AskService {
         try {
             console.log(`[AskService] 🤖 Processing message: ${userPrompt.substring(0, 50)}...`);
 
-            sessionId = await sessionRepository.getOrCreateActive('ask');
+            const review = this.reviewSession;
+            if (review) {
+                const session = await sessionRepository.getById(review.id);
+                if (review !== this.reviewSession || !session || session.uid !== review.owner || review.owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Reviewed session changed. Reopen it before asking.');
+                sessionId = review.id;
+            } else {
+                sessionId = await sessionRepository.getOrCreateActive('ask');
+            }
             this.requestSessionId = sessionId;
             const interview = interviewContext.context(sessionId);
+            this.state.contextLabel = interview.profile ? `Interview: ${interview.profile.name} · v${interview.profile.revision}` : 'Generic mode';
+            this._broadcastState();
             // Normal Ask requests include captured audio from this active session.
             // An explicit array (including [] for screen-only Ask) remains authoritative.
             if (!Array.isArray(conversationHistoryRaw)) {

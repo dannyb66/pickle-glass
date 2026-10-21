@@ -4,7 +4,9 @@ export class MainHeader extends LitElement {
     static properties = {
         isTogglingSession: { type: Boolean, state: true },
         shortcuts: { type: Object, state: true },
+        insightsVisible: { type: Boolean, state: true },
         listenSessionStatus: { type: String, state: true },
+        listenError: { type: String, state: true },
     };
 
     static styles = css`
@@ -343,12 +345,14 @@ export class MainHeader extends LitElement {
     constructor() {
         super();
         this.shortcuts = {};
+        this.insightsVisible = false;
         this.isVisible = true;
         this.isAnimating = false;
         this.hasSlidIn = false;
         this.settingsHideTimer = null;
         this.isTogglingSession = false;
         this.listenSessionStatus = 'beforeSession';
+        this.listenError = '';
         this.animationEndTimer = null;
         this.handleAnimationEnd = this.handleAnimationEnd.bind(this);
         this.handleMouseMove = this.handleMouseMove.bind(this);
@@ -473,19 +477,29 @@ export class MainHeader extends LitElement {
 
         if (window.api) {
 
-            this._sessionStateTextListener = (event, { success }) => {
-                if (success) {
+            this._sessionStateTextListener = (event, { success, status, error }) => {
+                if (['beforeSession', 'inSession', 'afterSession'].includes(status)) {
+                    this.listenSessionStatus = status;
+                } else if (success) {
                     this.listenSessionStatus = ({
                         beforeSession: 'inSession',
                         inSession: 'afterSession',
                         afterSession: 'beforeSession',
                     })[this.listenSessionStatus] || 'beforeSession';
-                } else {
-                    this.listenSessionStatus = 'beforeSession';
                 }
+                this.listenError = success ? '' : (error || 'Session change failed. Check Live Insights for details.');
                 this.isTogglingSession = false; // ✨ 로딩 상태만 해제
             };
             window.api.mainHeader.onListenChangeSessionResult(this._sessionStateTextListener);
+
+            this._insightsVisibilityListener = (event, visible) => { this.insightsVisible = visible; };
+            window.api.mainHeader.onInsightsVisibility(this._insightsVisibilityListener);
+
+            this._insightsShortcutListener = () => this._handleInsightsClick();
+            window.api.mainHeader.onInsightsShortcut(this._insightsShortcutListener);
+
+            this._listenShortcutListener = () => this._handleListenClick();
+            window.api.mainHeader.onListenShortcut(this._listenShortcutListener);
 
             this._shortcutListener = (event, keybinds) => {
                 console.log('[MainHeader] Received updated shortcuts:', keybinds);
@@ -507,6 +521,13 @@ export class MainHeader extends LitElement {
         if (window.api) {
             if (this._sessionStateTextListener) {
                 window.api.mainHeader.removeOnListenChangeSessionResult(this._sessionStateTextListener);
+            }
+            if (this._insightsVisibilityListener) window.api.mainHeader.removeOnInsightsVisibility(this._insightsVisibilityListener);
+            if (this._insightsShortcutListener) {
+                window.api.mainHeader.removeOnInsightsShortcut(this._insightsShortcutListener);
+            }
+            if (this._listenShortcutListener) {
+                window.api.mainHeader.removeOnListenShortcut(this._listenShortcutListener);
             }
             if (this._shortcutListener) {
                 window.api.mainHeader.removeOnShortcutsUpdated(this._shortcutListener);
@@ -538,15 +559,31 @@ export class MainHeader extends LitElement {
         }
 
         this.isTogglingSession = true;
+        this.listenError = '';
 
         try {
             const listenButtonText = this._getListenButtonText(this.listenSessionStatus);
             if (window.api) {
-                await window.api.mainHeader.sendListenButtonClick(listenButtonText);
+                const result = await window.api.mainHeader.sendListenButtonClick(listenButtonText);
+                if (result?.success === false) {
+                    this.listenError = result.error || 'Session change failed. Check Live Insights for details.';
+                    this.isTogglingSession = false;
+                }
             }
         } catch (error) {
             console.error('IPC invoke for session change failed:', error);
+            this.listenError = error.message || 'Session change failed.';
             this.isTogglingSession = false;
+        }
+    }
+
+    async _handleInsightsClick() {
+        if (this.wasJustDragged) return;
+
+        try {
+            if (window.api) await window.api.mainHeader.toggleInsights();
+        } catch (error) {
+            console.error('IPC invoke for Insights toggle failed:', error);
         }
     }
 
@@ -611,6 +648,7 @@ export class MainHeader extends LitElement {
             <div class="header" @mousedown=${this.handleMouseDown}>
                 <button 
                     class="listen-button ${Object.keys(buttonClasses).filter(k => buttonClasses[k]).join(' ')}"
+                    title=${this.listenError || (this.shortcuts.toggleListen ? `${listenButtonText} (${this.shortcuts.toggleListen})` : listenButtonText)}
                     @click=${this._handleListenClick}
                     ?disabled=${this.isTogglingSession}
                 >
@@ -642,6 +680,11 @@ export class MainHeader extends LitElement {
                         `}
                 </button>
 
+                <button class="header-actions" style="border:0;background:transparent;color:inherit" title=${`${this.insightsVisible ? 'Hide Live Insights' : 'Show Live Insights'}${this.shortcuts.toggleInsights ? ` (${this.shortcuts.toggleInsights})` : ''}`}
+                    @click=${this._handleInsightsClick} aria-pressed=${this.insightsVisible}>
+                    <div class="action-text"><div class="action-text-content">Insights</div></div>
+                </button>
+
                 <div class="header-actions ask-action" @click=${() => this._handleAskClick()}>
                     <div class="action-text">
                         <div class="action-text-content">Ask</div>
@@ -662,6 +705,8 @@ export class MainHeader extends LitElement {
 
                 <button 
                     class="settings-button"
+                    aria-label="Settings" title="Settings"
+                    @click=${(e) => this.showSettingsWindow(e.currentTarget)}
                     @mouseenter=${(e) => this.showSettingsWindow(e.currentTarget)}
                     @mouseleave=${() => this.hideSettingsWindow()}
                 >

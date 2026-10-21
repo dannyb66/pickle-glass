@@ -1,10 +1,12 @@
 import { html, css, LitElement } from '../../ui/assets/lit-core-2.7.4.min.js';
+import '../common/ResponseFontControls.js';
 import { parser, parser_write, parser_end, default_renderer } from '../../ui/assets/smd.js';
 
 export class AskView extends LitElement {
     static properties = {
         currentResponse: { type: String },
         currentQuestion: { type: String },
+        contextLabel: { type: String },
         isLoading: { type: Boolean },
         copyState: { type: String },
         isHovering: { type: Boolean },
@@ -119,7 +121,7 @@ export class AskView extends LitElement {
 
         .response-container code {
             font-family: 'Monaco', 'Menlo', 'Consolas', monospace !important;
-            font-size: 11px !important;
+            font-size: calc(11px * var(--ai-response-scale, 1)) !important;
             background: transparent !important;
             white-space: pre !important;
             word-wrap: normal !important;
@@ -273,6 +275,7 @@ export class AskView extends LitElement {
             align-items: center;
             gap: 8px;
             flex: 1;
+            min-width: 0;
             justify-content: flex-end;
         }
 
@@ -365,7 +368,7 @@ export class AskView extends LitElement {
             padding: 16px;
             padding-left: 48px;
             overflow-y: auto;
-            font-size: 14px;
+            font-size: calc(14px * var(--ai-response-scale, 1));
             line-height: 1.6;
             background: transparent;
             min-height: 0;
@@ -715,6 +718,7 @@ export class AskView extends LitElement {
         super();
         this.currentResponse = '';
         this.currentQuestion = '';
+        this.contextLabel = '';
         this.isLoading = false;
         this.copyState = 'idle';
         this.showTextInput = true;
@@ -789,6 +793,7 @@ export class AskView extends LitElement {
             window.api.askView.onAskStateUpdate((event, newState) => {
                 this.currentResponse = newState.currentResponse;
                 this.currentQuestion = newState.currentQuestion;
+                this.contextLabel = newState.contextLabel || '';
                 this.isLoading       = newState.isLoading;
                 this.isStreaming     = newState.isStreaming;
               
@@ -1346,6 +1351,7 @@ export class AskView extends LitElement {
                         <span class="response-label">${headerText}</span>
                     </div>
                     <div class="header-right">
+                        <response-font-controls @response-font-size-changed=${() => this.adjustWindowHeightThrottled()}></response-font-controls>
                         <span class="question-text">${this.getTruncatedQuestion(this.currentQuestion)}</span>
                         <div class="header-controls">
                             <button class="copy-button ${this.copyState === 'copied' ? 'copied' : ''}" @click=${this.handleCopy}>
@@ -1376,6 +1382,7 @@ export class AskView extends LitElement {
                 </div>
 
                 <!-- Response Container -->
+                ${hasResponse && this.contextLabel ? html`<div class="context-label" title=${this.contextLabel} style="font-size:11px;opacity:0.75;padding:0 16px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this.contextLabel}</div>` : ''}
                 <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer">
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
@@ -1418,7 +1425,8 @@ export class AskView extends LitElement {
             const responseHeight = responseEl.scrollHeight;
             const inputHeight = (inputEl && !inputEl.classList.contains('hidden')) ? inputEl.offsetHeight : 0;
 
-            const idealHeight = headerHeight + responseHeight + inputHeight;
+            const contextHeight = this.shadowRoot.querySelector('.context-label')?.offsetHeight || 0;
+            const idealHeight = headerHeight + contextHeight + responseHeight + inputHeight;
 
             const targetHeight = Math.min(700, idealHeight);
 

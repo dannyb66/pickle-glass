@@ -13,6 +13,10 @@ class ListenService {
         this.currentSessionId = null;
         this.isInitializingSession = false;
         this.sessionGeneration = 0;
+        this.pendingTranscriptWrites = new Set();
+        this.transcriptSaveErrors = new Map();
+        this.isStoppingSession = false;
+        this.insightsVisible = false;
 
         this.setupServiceCallbacks();
         console.log('[ListenService] Service instance created.');
@@ -22,7 +26,7 @@ class ListenService {
         // STT service callbacks
         this.sttService.setCallbacks({
             onTranscriptionComplete: (speaker, text) => {
-                this.handleTranscriptionComplete(speaker, text);
+                return this.handleTranscriptionComplete(speaker, text);
             },
             onStatusUpdate: (status) => {
                 this.sendToRenderer('update-status', status);
@@ -63,7 +67,7 @@ class ListenService {
             switch (listenButtonText) {
                 case 'Listen':
                     console.log('[ListenService] changeSession to "Listen"');
-                    internalBridge.emit('window:requestVisibility', { name: 'listen', visible: true });
+                    this.setInsightsVisibility(true);
                     if (!await this.initializeSession()) throw new Error('Listen initialization failed.');
                     if (listenWindow && !listenWindow.isDestroyed()) {
                         listenWindow.webContents.send('session-state-changed', { isActive: true });
@@ -72,7 +76,10 @@ class ListenService {
         
                 case 'Stop':
                     console.log('[ListenService] changeSession to "Stop"');
-                    await this.closeSession();
+                    {
+                        const result = await this.closeSession({ preserveReview: true });
+                        if (result?.success === false) throw Object.assign(new Error(result.error || 'Session stopped, but could not be saved completely.'), { sessionStatus: 'afterSession' });
+                    }
                     if (listenWindow && !listenWindow.isDestroyed()) {
                         listenWindow.webContents.send('session-state-changed', { isActive: false });
                     }
@@ -80,7 +87,7 @@ class ListenService {
         
                 case 'Done':
                     console.log('[ListenService] changeSession to "Done"');
-                    internalBridge.emit('window:requestVisibility', { name: 'listen', visible: false });
+                    this.setInsightsVisibility(false);
                     listenWindow.webContents.send('session-state-changed', { isActive: false });
                     break;
         
@@ -88,20 +95,28 @@ class ListenService {
                     throw new Error(`[ListenService] unknown listenButtonText: ${listenButtonText}`);
             }
             
-            header.webContents.send('listen:changeSessionResult', { success: true });
+            header.webContents.send('listen:changeSessionResult', { success: true, status: { Listen: 'inSession', Stop: 'afterSession', Done: 'beforeSession' }[listenButtonText] });
 
         } catch (error) {
             console.error('[ListenService] error in handleListenRequest:', error);
-            header.webContents.send('listen:changeSessionResult', { success: false });
+            header.webContents.send('listen:changeSessionResult', { success: false, error: error.message, ...(error.sessionStatus ? { status: error.sessionStatus } : {}) });
             throw error; 
         }
     }
 
-    async handleTranscriptionComplete(speaker, text) {
+    handleTranscriptionComplete(speaker, text) {
+        const write = this.persistTranscriptionComplete(speaker, text);
+        this.pendingTranscriptWrites.add(write);
+        write.finally(() => this.pendingTranscriptWrites.delete(write));
+        return write;
+    }
+
+    async persistTranscriptionComplete(speaker, text) {
         const sessionId = this.currentSessionId;
         const generation = this.sessionGeneration;
         const owner = authService.getCurrentUserId();
-        const current = () => sessionId && this.currentSessionId === sessionId && this.sessionGeneration === generation && authService.getCurrentUserId() === owner;
+        const current = () => sessionId && this.currentSessionId === sessionId && authService.getCurrentUserId() === owner
+            && (this.sessionGeneration === generation || (this.closingSession?.id === sessionId && this.closingSession.generation === generation && this.closingSession.owner === owner));
         if (!current() || !text.trim()) return;
         try {
             await sessionRepository.touch(sessionId);
@@ -110,6 +125,8 @@ class ListenService {
             if (!current()) return;
             this.summaryService.addConversationTurn(speaker, text);
         } catch (error) {
+            this.transcriptSaveErrors.set(sessionId, error.message);
+            this.summaryService.broadcastState?.({ phase: 'error', error: `Transcript could not be saved: ${error.message}` });
             console.error('[ListenService] Could not save current transcript:', error.message);
         }
     }
@@ -132,6 +149,7 @@ class ListenService {
             const sessionId = await sessionRepository.getOrCreateActive('listen');
             if (generation !== this.sessionGeneration) return false;
             this.currentSessionId = sessionId;
+            internalBridge.emit('listen:sessionStarted', { sessionId });
             console.log(`[DB] New listen session ensured: ${this.currentSessionId}`);
 
             // Set session ID for summary service
@@ -150,7 +168,7 @@ class ListenService {
     }
 
     async initializeSession(language = 'en') {
-        if (this.isInitializingSession) {
+        if (this.isInitializingSession || this.isStoppingSession) {
             console.log('Session initialization already in progress.');
             return false;
         }
@@ -226,34 +244,73 @@ class ListenService {
         return this.sttService.isSessionActive();
     }
 
-    async closeSession() {
-        this.sessionGeneration += 1;
+    setInsightsVisibility(visible) {
+        this.insightsVisible = !!visible;
+        internalBridge.emit('window:requestVisibility', { name: 'listen', visible: this.insightsVisible });
+        const header = require('../../window/windowManager').windowPool?.get('header');
+        if (header && !header.isDestroyed()) header.webContents.send('listen:insightsVisibility', this.insightsVisible);
+        return this.insightsVisible;
+    }
+
+    clearReviewedSession() {
+        this.summaryService.clearSession?.();
+        this.setInsightsVisibility(false);
+        const header = require('../../window/windowManager').windowPool?.get('header');
+        if (header && !header.isDestroyed()) header.webContents.send('listen:changeSessionResult', { success: true, status: 'beforeSession' });
+    }
+
+    async closeSession({ preserveReview = false } = {}) {
+        if (this.stoppingPromise) return this.stoppingPromise;
+        this.stoppingPromise = this.finishClosingSession(preserveReview);
+        try { return await this.stoppingPromise; } finally { this.stoppingPromise = null; }
+    }
+
+    async finishClosingSession(preserveReview) {
+        this.isStoppingSession = true;
         const closingSessionId = this.currentSessionId;
-        this.currentSessionId = null;
-        this.summaryService.setSessionId(null);
-        this.summaryService.resetConversationHistory();
+        const owner = authService.getCurrentUserId();
+        this.closingSession = { id: closingSessionId, owner, generation: this.sessionGeneration };
+        this.sessionGeneration++; // Cancel startup immediately; accepted writes retain their closing-session guard.
+        // Cancel stale analyses while retaining the reviewed session on normal Stop.
+        if (preserveReview) this.summaryService.onSessionStopped?.();
+        else { this.summaryService.setSessionId(null); this.summaryService.resetConversationHistory(); }
+        let closingError;
         try {
-            this.sendToRenderer('change-listen-capture-state', { status: "stop" });
-            // Close STT sessions
-            await this.sttService.closeSessions();
-
-            await this.stopMacOSAudioCapture();
-
-            // End database session
-            if (closingSessionId) {
-                await sessionRepository.end(closingSessionId);
-                console.log(`[DB] Session ${closingSessionId} ended.`);
-            }
-
-            // Reset state
+            this.sendToRenderer('change-listen-capture-state', { status: 'stop' });
+            // Finalized speech may still be waiting in the STT debounce buffers.
+            this.sttService.flushMyCompletion?.();
+            this.sttService.flushTheirCompletion?.();
+            let captureError;
+            try { await this.sttService.closeSessions(); } catch (error) { captureError = error; }
+            try { await this.stopMacOSAudioCapture(); } catch (error) { captureError ||= error; }
+            while (this.pendingTranscriptWrites.size) await Promise.all([...this.pendingTranscriptWrites]);
+            this.sessionGeneration++;
             this.currentSessionId = null;
-            this.summaryService.resetConversationHistory();
-
-            console.log('Listen service session closed.');
+            if (owner !== authService.getCurrentUserId()) throw new Error('User changed while closing the session.');
+            if (closingSessionId) await sessionRepository.end(closingSessionId);
+            if (!preserveReview) this.summaryService.resetConversationHistory();
+            const saveError = this.transcriptSaveErrors.get(closingSessionId);
+            this.transcriptSaveErrors.delete(closingSessionId);
+            if (saveError) throw new Error(`Session stopped, but some transcript text could not be saved: ${saveError}`);
+            if (captureError) throw captureError;
             return { success: true };
         } catch (error) {
-            console.error('Error closing listen service session:', error);
+            closingError = error.message;
+            this.sessionGeneration++;
+            this.currentSessionId = null;
+            this.summaryService.broadcastState?.({ phase: 'error', error: error.message, progress: '' });
             return { success: false, error: error.message };
+        } finally {
+            this.closingSession = null;
+            this.isStoppingSession = false;
+            if (owner === authService.getCurrentUserId()) {
+                this.sendToRenderer('session-state-changed', { isActive: false });
+                const header = require('../../window/windowManager').windowPool?.get('header');
+                if (header && !header.isDestroyed()) header.webContents.send('listen:changeSessionResult', {
+                    success: !closingError, status: preserveReview ? 'afterSession' : 'beforeSession',
+                    ...(closingError ? { error: closingError } : {}),
+                });
+            }
         }
     }
 

@@ -114,11 +114,18 @@ contextBridge.exposeInMainWorld('api', {
     
     // Generic invoke (for dynamic channel names)
     // invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    toggleInsights: () => ipcRenderer.invoke('insights:toggleVisible'),
+    onInsightsVisibility: callback => ipcRenderer.on('listen:insightsVisibility', callback),
+    removeOnInsightsVisibility: callback => ipcRenderer.removeListener('listen:insightsVisibility', callback),
     sendListenButtonClick: (listenButtonText) => ipcRenderer.invoke('listen:changeSession', listenButtonText),
     sendAskButtonClick: () => ipcRenderer.invoke('ask:toggleAskButton'),
     sendToggleAllWindowsVisibility: () => ipcRenderer.invoke('shortcut:toggleAllWindowsVisibility'),
     
     // Listeners
+    onInsightsShortcut: (callback) => ipcRenderer.on('shortcut:insights', callback),
+    removeOnInsightsShortcut: (callback) => ipcRenderer.removeListener('shortcut:insights', callback),
+    onListenShortcut: (callback) => ipcRenderer.on('shortcut:listen', callback),
+    removeOnListenShortcut: (callback) => ipcRenderer.removeListener('shortcut:listen', callback),
     onListenChangeSessionResult: (callback) => ipcRenderer.on('listen:changeSessionResult', callback),
     removeOnListenChangeSessionResult: (callback) => ipcRenderer.removeListener('listen:changeSessionResult', callback),
     onShortcutsUpdated: (callback) => ipcRenderer.on('shortcuts-updated', callback),
@@ -171,6 +178,15 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   // src/ui/listen/ListenView.js
+  insights: {
+    getState: () => ipcRenderer.invoke('insights:getState'),
+    analyze: scope => ipcRenderer.invoke('insights:analyze', scope),
+    setAuto: enabled => ipcRenderer.invoke('insights:setAuto', enabled),
+    setVisible: visible => ipcRenderer.invoke('insights:setVisible', visible),
+    onState: callback => ipcRenderer.on('insights:state', callback),
+    removeOnState: callback => ipcRenderer.removeListener('insights:state', callback),
+  },
+
   listenView: {
     // Window Management
     adjustWindowHeight: (winName, height) => ipcRenderer.invoke('adjust-window-height', { winName, height }),
@@ -190,7 +206,7 @@ contextBridge.exposeInMainWorld('api', {
   // src/ui/listen/summary/SummaryView.js
   summaryView: {
     // Message Handling
-    sendQuestionFromSummary: (text) => ipcRenderer.invoke('ask:sendQuestionFromSummary', text),
+    sendQuestionFromSummary: (text, sessionId) => ipcRenderer.invoke('ask:sendQuestionFromSummary', text, sessionId),
     
     // Listeners
     onSummaryUpdate: (callback) => ipcRenderer.on('summary-update', callback),
@@ -201,6 +217,7 @@ contextBridge.exposeInMainWorld('api', {
   interview: {
     open: () => ipcRenderer.invoke('interview:open'),
     onOwnerChanging: callback => ipcRenderer.on('interview:owner-changing', callback),
+    removeOnOwnerChanging: callback => ipcRenderer.removeListener('interview:owner-changing', callback),
     onUserChanged: callback => ipcRenderer.on('user-state-changed', callback),
     list: () => ipcRenderer.invoke('interview:list'),
     save: (profile) => ipcRenderer.invoke('interview:save', profile),
