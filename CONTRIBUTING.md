@@ -42,7 +42,7 @@ Now it's time to set up your local environment.
 Write your code! As you work, please adhere to our quality standards.
 
 -   **Code Style & Quality**: Our project uses `Prettier` and `ESLint` to maintain a consistent code style.
--   **Architecture & Design Patterns**: All new code must be consistent with the project's architecture. Please read our **[Design Patterns Guide](https://github.com/pickle-com/glass/blob/main/docs/DESIGN_PATTERNS.md)** before making significant changes.
+-   **Architecture & Design Patterns**: All new code must be consistent with the project's architecture. Please read our **[Design Patterns Guide](docs/DESIGN_PATTERNS.md)** before making significant changes.
 
 ### 5. Create a Pull Request (PR)
 

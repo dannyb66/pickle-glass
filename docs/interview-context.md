@@ -32,7 +32,7 @@ JD fetching accepts public HTTPS, rejects credentials/custom ports/private netwo
 
 Profiles, selection, immutable session snapshots, and interview transcripts/answers are stored in the app's local SQLite database. Interview sessions use local repositories even when signed in; they are excluded from the existing Firebase session migration. Existing generic meetings retain their previous behavior. The signed-in My Activity view includes the current account’s local interview sessions alongside cloud sessions; interview details continue to read from SQLite. Anonymous history stays separate. This feature does not add at-rest encryption or a new cloud backup. The [repository routing overview](DESIGN_PATTERNS.md#2-data-persistence-the-dual-repository-factory) explains the local-only exception.
 
-Starting a session permits the configured audio provider to receive captured audio, and Ask/Summary permit the configured language provider to receive the pinned sources and current observations. Ask additionally sends its captured screenshot when supported. Browser imports transfer document bytes only to the app’s loopback API; preview and save do not send the documents to an AI provider or cloud storage. Use preparation or otherwise permitted sessions and source material you intend to share with the chosen provider.
+Starting Listen permits the configured audio provider to receive captured audio, and Ask/Summary permit the configured language provider to receive the pinned sources and current observations. Ask additionally sends its captured screenshot when supported. Browser imports transfer document bytes only to the app’s loopback API; preview and save do not send the documents to an AI provider or cloud storage. Use preparation or otherwise permitted sessions and source material you intend to share with the chosen provider.
 
 Deleting a profile removes its stored text and snapshots and stops an active session using it. An invalidation marker prevents deleted context from falling through to generic/cloud routing. Previous generated answers may still contain source facts and are not automatically erased. Deletion cannot retract content already sent to a provider. Account transitions stop capture and reject stale-owner requests immediately. The website refreshes its profile list when focused and every ten seconds, clearing the editor when the desktop account changes; requests already sent to a provider may still complete there. Foreign-owner session IDs are rejected.
 
@@ -44,18 +44,12 @@ Signed-in cloud content also depends on the account’s encryption key in the OS
 
 ## Validation
 
-With the repository's compatible Node runtime:
+Use Electron's Node runtime so the full suite, including native SQLite integration tests, uses the matching ABI:
 
 ```sh
-node --test tests/*.test.cjs
+ELECTRON_RUN_AS_NODE=1 node_modules/.bin/electron --test tests/*.test.cjs
 npm run build:renderer
 npm run build:web
-```
-
-The native SQLite test requires Electron's matching ABI. On macOS:
-
-```sh
-ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron --test tests/*.test.cjs
 ```
 
 The web regression suite covers the local-origin boundary, desktop ownership, browser upload parsing, starting context without speech, same-origin API routing, stable website ports and opening the existing website. SQLite integration tests trace saved selection through the real session adapter into outgoing Ask and Insights requests; Gemini tests verify streaming and chat preserve source packets, prior turns and screenshot MIME types. The regression suite also covers confirmation, source limits, private-DNS/redirect/deadline rejection, snapshots and deletion, owner isolation, Ask image fallback and Summary context delivery, late STT callbacks, cancelled socket creation, and transcript/session changes during asynchronous persistence. Real native UI and provider/audio/screen acceptance use separate synthetic fixtures and ephemeral credentials; they are not replaced by these unit tests.

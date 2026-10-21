@@ -98,6 +98,8 @@ npm run build:web
 
 Regression coverage includes selected-profile activation through real session adapters and outgoing model requests, immutable snapshots, owner isolation, website origin checks, start without speech, stable website ports, same-origin API requests, Gemini context, shortcuts, analysis coverage and durable transcript writes.
 
+For development background, see the [contributing guide](CONTRIBUTING.md), [architecture and repository routing](docs/DESIGN_PATTERNS.md), [refactor notes](docs/refactor-plan.md) and [web asset notes](pickleglass_web/public/README.md). Release changes are listed in the [changelog](CHANGELOG.md).
+
 ## Attribution and license
 
 Glass is based on [Pickle Glass](https://github.com/pickle-com/glass), which credits [Cheating Daddy](https://github.com/sohzm/cheating-daddy). This fork retains the [GPL-3.0 license](LICENSE).

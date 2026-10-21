@@ -13,8 +13,8 @@ These are the fundamental rules that govern the entire application.
 1.  **Centralized Data Logic**: All data persistence logic (reading from or writing to a database) is centralized within the **Electron Main Process**. The UI layers (both Electron's renderer and the web dashboard) are forbidden from accessing data sources directly.
 2.  **Feature-Based Modularity**: Code is organized by feature (`src/features`) to promote encapsulation and separation of concerns. A new feature should be self-contained within its own directory.
 3.  **Dual-Database Repositories**: The data access layer uses a **Repository Pattern** that abstracts away the underlying database. Generic user-data repositories have local `SQLite` and cloud `Firebase` implementations with identical interfaces. Saved interview profiles and their pinned session records are an explicit local-only exception: they remain in SQLite even when signed in. See [saved interview profiles](interview-context.md#local-data-and-deletion).
-4.  **AI Provider Abstraction**: AI model interactions are abstracted using a **Factory Pattern**. To add a new provider (e.g., a new LLM), you only need to create a new provider module that conforms to the base interface in `src/common/ai/providers/` and register it in the `factory.js`.
-5.  **Single Source of Truth for Schema**: The schema for the local SQLite database is defined in a single location: `src/common/config/schema.js`. Any change to the database structure **must** be updated here.
+4.  **AI Provider Abstraction**: AI model interactions are abstracted using a **Factory Pattern**. To add a new provider (e.g., a new LLM), you only need to create a new provider module that conforms to the base interface in `src/features/common/ai/providers/` and register it in the `factory.js`.
+5.  **Single Source of Truth for Schema**: The schema for the local SQLite database is defined in a single location: `src/features/common/config/schema.js`. Any change to the database structure **must** be updated here.
 6.  **Encryption by Default**: All sensitive user data **must** be encrypted before being persisted to Firebase. This includes, but is not limited to, API keys, conversation titles, transcription text, and AI-generated summaries. This is handled automatically by the `createEncryptedConverter` Firestore helper.
 
 ---
@@ -25,7 +25,7 @@ This section details the architecture of the core desktop application.
 
 ### 1. Overall Pattern: Service-Repository
 
-The Electron app's logic is primarily built on a **Service-Repository** pattern, with the Views being the HTML/JS files in the `src/app` and `src/features` directories.
+The Electron app's logic is primarily built on a **Service-Repository** pattern, with the Views being the HTML/JS files in the `src/ui` directory.
 
 -   **Views** (`*.html`, `*View.js`): The UI layer. Views are responsible for rendering the interface and capturing user interactions. They are intentionally kept "dumb" and delegate all significant logic to a corresponding Service.
 -   **Services** (`*Service.js`): Services contain the application's business logic. They act as the intermediary between Views and Repositories. For example, `sttService` contains the logic for STT, while `summaryService` handles the logic for generating summaries.
@@ -33,16 +33,16 @@ The Electron app's logic is primarily built on a **Service-Repository** pattern,
 
 **Location of Modules:**
 -   **Feature-Specific**: If a service or repository is used by only one feature, it should reside within that feature's directory (e.g., `src/features/listen/summary/summaryService.js`).
--   **Common**: If a service or repository is shared across multiple features (like `authService` or `userRepository`), it must be placed in `src/common/services/` or `src/common/repositories/` respectively.
+-   **Common**: If a service or repository is shared across multiple features (like `authService` or `userRepository`), it must be placed in `src/features/common/services/` or `src/features/common/repositories/` respectively.
 
 ### 2. Data Persistence: The Dual Repository Factory
 
 The application dynamically switches between using the local SQLite database and the cloud-based Firebase Firestore.
 
--   **SQLite**: The default data store for all users, especially those not logged in. This ensures full offline functionality. The low-level client is `src/common/services/sqliteClient.js`.
+-   **SQLite**: The default data store for all users, especially those not logged in. This ensures full offline functionality. The low-level client is `src/features/common/services/sqliteClient.js`.
 -   **Firebase**: Used for authenticated users' generic sessions. This enables data synchronization across devices and with the web dashboard. Interview profiles, snapshots, transcripts, Ask answers and summaries stay local and are excluded from Firebase session migration.
 
-The selection mechanism is a sophisticated **Factory and Adapter Pattern** located in the `index.js` file of each repository directory (e.g., `src/common/repositories/session/index.js`).
+The selection mechanism is a sophisticated **Factory and Adapter Pattern** located in the `index.js` file of each repository directory (e.g., `src/features/common/repositories/session/index.js`).
 
 **How generic-session routing works:**
 1.  **Service Call**: A service makes a call to a high-level repository function, like `sessionRepository.create('ask')`. The generic-session service is unaware of the user's state or the underlying database. Interview startup instead creates a local session and pins the selected profile revision; subsequent repository calls use that session binding to keep its records in SQLite.
