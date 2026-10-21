@@ -65,6 +65,8 @@ function harness({ signedIn = false, cloudRows = [], cloudList } = {}) {
         '../../../window/windowManager': windows, '../../common/repositories/session': adapter,
         '../../common/services/interviewContextService': context, '../../common/services/authService': auth,
         '../../common/services/modelStateService': model, '../stt/repositories': transcriptRepo,
+        '../../ask/repositories': { getAllAiMessagesBySessionId: async () => [] },
+        '../../common/services/insightsScreenContext': { capture: async () => ({}), get: () => [], clear() {} },
         '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'Trusted base policy' }, './repositories': { saveSummary: async () => {} },
         '../../common/ai/factory': { createLLM: () => ({ chat: async messages => {
             requests.summary.push(messages); return { content: '**Summary Overview**\n- Synthetic observation' };

@@ -13,6 +13,7 @@ const later = () => { let resolve; const promise = new Promise(r => { resolve = 
 test('Summary pins owner/session/generation before awaits and drops a switched request before sending', async () => {
     const pending = later(); const calls = []; let owner = 'owner-a';
     const Summary = load('features/listen/summary/summaryService.js', {
+        '../../common/services/insightsScreenContext': { capture: async () => ({}), get: () => [], clear() {} },
         electron: {}, '../../../window/windowManager': { windowPool: new Map() }, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic' },
         '../../common/ai/factory': { createLLM: () => ({ chat: async messages => { calls.push(messages); return { content: 'response' }; } }) },
         '../../common/repositories/session': { touch: async () => {} }, './repositories': { saveSummary: () => assert.fail('old summary must not save') },
@@ -27,6 +28,7 @@ test('Summary pins owner/session/generation before awaits and drops a switched r
 test('Summary uses the exact same pinned source packet as Ask and never puts source content in system policy', async () => {
     const calls = []; const packet = '{"profileId":"Orchid","interview_sources":["resume","jd","reference"]}';
     const Summary = load('features/listen/summary/summaryService.js', {
+        '../../common/services/insightsScreenContext': { capture: async () => ({}), get: () => [], clear() {} },
         electron: {}, '../../../window/windowManager': { windowPool: new Map() }, '../../common/prompts/promptBuilder.js': { getSystemPrompt: () => 'generic {{CONVERSATION_HISTORY}}' },
         '../../common/ai/factory': { createLLM: () => ({ chat: async messages => { calls.push(messages); return { content: '**Summary Overview**\n- Orchid result' }; } }) },
         '../../common/repositories/session': { touch: async () => {} }, './repositories': { saveSummary() {} },
@@ -54,7 +56,7 @@ test('Listen drops old transcript after a session switch during persistence and 
     const service = load('features/listen/listenService.js', {
         electron: {}, './stt/sttService': class { setCallbacks() {} }, './summary/summaryService': class { setCallbacks() {} addConversationTurn(speaker, text) { summaries.push(text); } },
         '../common/services/authService': { getCurrentUserId: () => 'owner' }, '../common/repositories/session': { touch: () => pending.promise },
-        './stt/repositories': { addTranscript: entry => saved.push(entry) }, '../../bridge/internalBridge': { emit() {} }
+        './stt/repositories': { addTranscript: entry => saved.push(entry) }, '../../bridge/internalBridge': new (require('node:events').EventEmitter)()
     });
     service.currentSessionId = 'A'; const request = service.handleTranscriptionComplete('Me', 'Old A private audio'); service.currentSessionId = 'B'; service.sessionGeneration += 1; pending.resolve(); await request;
     assert.deepEqual(saved, []); assert.deepEqual(summaries, []);

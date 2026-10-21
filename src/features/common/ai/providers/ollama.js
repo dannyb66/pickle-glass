@@ -209,7 +209,11 @@ function createLLM({
                     });
 
                     if (!response.ok) {
-                        throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+                        let detail = '';
+                        try { const body = await response.json(); if (typeof body.error === 'string') detail = body.error.slice(0, 1000); } catch {}
+                        const error = new Error(`Ollama API error: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ''}`);
+                        error.status = response.status;
+                        throw error;
                     }
 
                     const result = await response.json();

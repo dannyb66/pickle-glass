@@ -114,7 +114,7 @@ contextBridge.exposeInMainWorld('api', {
     
     // Generic invoke (for dynamic channel names)
     // invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
-    toggleInsights: () => ipcRenderer.invoke('insights:toggleVisible'),
+    toggleInsights: () => ipcRenderer.invoke('insights:refresh'),
     onInsightsVisibility: callback => ipcRenderer.on('listen:insightsVisibility', callback),
     removeOnInsightsVisibility: callback => ipcRenderer.removeListener('listen:insightsVisibility', callback),
     sendListenButtonClick: (listenButtonText) => ipcRenderer.invoke('listen:changeSession', listenButtonText),
@@ -183,6 +183,7 @@ contextBridge.exposeInMainWorld('api', {
     getState: () => ipcRenderer.invoke('insights:getState'),
     analyze: scope => ipcRenderer.invoke('insights:analyze', scope),
     setAuto: enabled => ipcRenderer.invoke('insights:setAuto', enabled),
+    setScreen: enabled => ipcRenderer.invoke('insights:setScreen', enabled),
     setVisible: visible => ipcRenderer.invoke('insights:setVisible', visible),
     onState: callback => ipcRenderer.on('insights:state', callback),
     removeOnState: callback => ipcRenderer.removeListener('insights:state', callback),

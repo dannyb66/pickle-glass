@@ -64,15 +64,17 @@ Resume evidence, employer requirements and study material remain separate source
 
 ## Live Insights
 
-**Listen** opens Live Insights. Automatic analysis runs every five finalized transcript segments using the latest 30 segments. Turn off **Auto-update** for manual analysis.
+Live Insights works with saved Ask questions and answers, optional audio transcripts, the pinned interview profile and recent screen snapshots. Audio capture is optional. Click the header's **Insights** button or press **⌘⇧I** to open the panel and analyze the entire current session, including a chat-only session. These actions prepare the current session if needed and never start Listen.
 
-- **Recent conversation → Analyze now** reviews the latest 30 saved transcript segments.
-- **Entire session → Analyze now** processes the saved transcript in parts, then synthesizes the result. The status reports coverage and whether the transcript was condensed.
-- **×**, the header's **Insights** button, or **⌘⇧I** hides/shows the panel without stopping capture.
+- **Recent conversation → Analyze now** reviews the latest 30 saved chat messages and audio segments in chronological order.
+- **Entire session → Analyze now** reviews all saved chat and transcript text, processing long sessions in parts before synthesizing the result. The status reports coverage and sources. Latest user questions guide the analysis; AI answers are treated as unverified drafts.
+- **Include screen**, enabled by default, sends up to five recent Ask screenshots and a fresh current screenshot with each manual analysis. Automatic updates reuse cached snapshots without taking a new screenshot. Disable this option for text-only Insights.
+- **Auto-update** runs after each saved AI answer, even with Listen off, and every five finalized audio segments while recording. It reviews recent context. Turn it off to analyze only when requested.
+- **×** hides the panel without stopping capture. The header's **Insights** button and **⌘⇧I** always open and refresh entire-session analysis.
 - **Stop** flushes pending transcript writes and preserves the session for analysis and follow-up questions. **Done** hides the panel; Insights can reopen it.
 - Starting another Listen session, switching accounts, deleting the profile or choosing generic mode clears the previous review.
 
-Clicking an insight opens Ask associated with that reviewed session. Closing Ask clears that review selection. Insights analyzes transcript text; screen observations are supplied through Ask rather than continuously archived video.
+Clicking an insight opens Ask associated with that reviewed session. Closing Ask clears that review selection. Insights keeps at most five Ask screenshots and the latest manual capture per cached session, for at most three sessions, only in memory. Entire-session coverage applies to saved text; it does not recover earlier screenshots or continuously record the screen.
 
 Ask and Insights have **A− / A+** response-size controls, from 75–150%. Click the percentage to reset. The choice is remembered across response windows.
 
@@ -84,7 +86,7 @@ All bindings can be changed or disabled in **Settings → Shortcuts**. Use Ctrl 
 | --- | --- |
 | Ask / focus a follow-up / submit a screen-only follow-up | Cmd+Enter |
 | Listen / Stop / Done | Cmd+Shift+L |
-| Show / hide Insights | Cmd+Shift+I |
+| Open Insights / analyze entire session | Cmd+Shift+I |
 | Show / hide Glass | Cmd+Backslash |
 | Capture a screenshot | Cmd+Shift+S |
 | Previous / next response | Cmd+[ / Cmd+] |
@@ -109,7 +111,7 @@ npm run build:renderer
 npm run build:web
 ```
 
-Regression coverage includes selected-profile activation through real session adapters and outgoing model requests, immutable snapshots, owner isolation, website origin checks, start without speech, stable website ports, same-origin API requests, Gemini context, shortcuts, analysis coverage and durable transcript writes.
+Regression coverage includes selected-profile activation through real session adapters and outgoing model requests, immutable snapshots, owner isolation, website origin checks, start without speech, stable website ports, same-origin API requests, Gemini context, shortcuts, chat/audio/screen Insights, bounded screenshot retention and durable transcript writes.
 
 For development background, see the [contributing guide](CONTRIBUTING.md), [architecture and repository routing](docs/DESIGN_PATTERNS.md), [refactor notes](docs/refactor-plan.md) and [web asset notes](pickleglass_web/public/README.md). Release changes are listed in the [changelog](CHANGELOG.md).
 

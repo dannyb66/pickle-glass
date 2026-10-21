@@ -18,7 +18,7 @@ function addAiMessage({ uid, sessionId, role, content, model = 'unknown' }) {
 
 function getAllAiMessagesBySessionId(sessionId) {
     const db = sqliteClient.getDb();
-    const query = "SELECT * FROM ai_messages WHERE session_id = ? ORDER BY sent_at ASC";
+    const query = "SELECT * FROM ai_messages WHERE session_id = ? ORDER BY sent_at ASC, rowid ASC";
     return db.prepare(query).all(sessionId);
 }
 

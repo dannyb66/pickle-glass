@@ -8,7 +8,7 @@ const commonSystemShortcuts = new Set([
 const displayNameMap = {
     nextStep: 'Ask Anything',
     toggleListen: 'Listen / Stop / Done',
-    toggleInsights: 'Show / Hide Insights',
+    toggleInsights: 'Analyze Live Insights',
     moveUp: 'Move Up Window',
     moveDown: 'Move Down Window',
     scrollUp: 'Scroll Up Response',

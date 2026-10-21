@@ -241,6 +241,7 @@ class AskService {
      * @returns {Promise<{success: boolean, response?: string, error?: string}>}
      */
     async sendMessage(userPrompt, conversationHistoryRaw = null) {
+        const requestOwner = require('../common/services/authService').getCurrentUserId();
         internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
@@ -286,7 +287,10 @@ class AskService {
                     .filter(turn => typeof turn.text === 'string' && turn.text.trim())
                     .map(turn => `${turn.speaker || 'speaker'}: ${turn.text.trim()}`);
             }
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             await askRepository.addAiMessage({ sessionId, role: 'user', content: userPrompt.trim() });
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
+            internalBridge.emit('ask:messageSaved', { sessionId, owner: requestOwner, role: 'user' });
             console.log(`[AskService] DB: Saved user prompt to session ${sessionId}`);
             
             const modelInfo = await modelStateService.getCurrentModelInfo('llm');
@@ -296,7 +300,9 @@ class AskService {
             console.log(`[AskService] Using model: ${modelInfo.model} for provider: ${modelInfo.provider}`);
 
             const screenshotResult = await captureScreenshot({ quality: 'medium' });
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
+            if (screenshotBase64) require('../common/services/insightsScreenContext').remember(sessionId, requestOwner, screenshotResult);
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
@@ -349,7 +355,7 @@ class AskService {
                     reader.cancel(signal.reason).catch(() => { /* 이미 취소된 경우의 오류는 무시 */ });
                 });
 
-                await this._processStream(reader, askWin, sessionId, signal);
+                await this._processStream(reader, askWin, sessionId, signal, requestOwner);
                 return { success: true };
 
             } catch (multimodalError) {
@@ -378,7 +384,7 @@ class AskService {
                         fallbackReader.cancel(signal.reason).catch(() => {});
                     });
 
-                    await this._processStream(fallbackReader, askWin, sessionId, signal);
+                    await this._processStream(fallbackReader, askWin, sessionId, signal, requestOwner);
                     return { success: true };
                 } else {
                     // 다른 종류의 에러이거나 스크린샷이 없었다면 그대로 throw
@@ -415,7 +421,7 @@ class AskService {
      * @returns {Promise<void>}
      * @private
      */
-    async _processStream(reader, askWin, sessionId, signal) {
+    async _processStream(reader, askWin, sessionId, signal, requestOwner) {
         const decoder = new TextDecoder();
         let fullResponse = '';
 
@@ -471,10 +477,11 @@ class AskService {
                 this.state.currentResponse = fullResponse;
                 this._broadcastState();
             }
-            if (fullResponse && !signal.aborted) {
+            if (fullResponse && !signal.aborted && requestOwner === require('../common/services/authService').getCurrentUserId()) {
                  try {
                     interviewContext.snapshot(sessionId);
                     await askRepository.addAiMessage({ sessionId, role: 'assistant', content: fullResponse });
+                    if (!signal.aborted && requestOwner === require('../common/services/authService').getCurrentUserId()) internalBridge.emit('ask:messageSaved', { sessionId, owner: requestOwner, role: 'assistant' });
                     console.log(`[AskService] DB: Saved partial or full assistant response to session ${sessionId} after stream ended.`);
                 } catch(dbError) {
                     console.error("[AskService] DB: Failed to save assistant response after stream ended:", dbError);

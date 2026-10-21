@@ -8,7 +8,7 @@ const { EventEmitter } = require('node:events');
 function harness(transcripts = [], chunks = [], interview = null, failImage = false, controls = {}) {
     const bridge = new EventEmitter();
     controls.bridge = bridge;
-    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, states: [] };
+    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, states: [], screens: [] };
     const window = {
         isDestroyed: () => false,
         isVisible: () => true,
@@ -33,8 +33,9 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
             getOrCreateActive: async () => { calls.activeSessionRequests++; return 'active-listen-session'; },
             getById: async id => ({ id, uid: controls.sessionOwner || 'owner-a', ended_at: 123 }),
         },
+        '../common/services/insightsScreenContext': { remember: (...args) => calls.screens.push(args) },
         '../common/services/authService': { getCurrentUserId: () => controls.owner || 'owner-a' },
-        './repositories': { addAiMessage: async () => {} },
+        './repositories': { addAiMessage: async entry => controls.save?.(entry) },
         '../common/prompts/promptBuilder': { getSystemPrompt: (kind, context) => context },
         '../common/services/modelStateService': { getCurrentModelInfo: async () => ({ provider: 'openai', apiKey: 'synthetic', model: 'synthetic' }) },
         '../listen/stt/repositories': { getAllTranscriptsBySessionId: async sessionId => {
@@ -203,4 +204,31 @@ test('review cannot open another owner session or survive an account change', as
     assert.equal(result.success, false);
     assert.match(result.error, /Reviewed session changed/);
     assert.equal(h.calls.prompts.length, 1);
+});
+
+
+test('saved chat events carry the session/owner and successful screenshots become Insights context', async () => {
+    const wire = Buffer.from('data: {"choices":[{"delta":{"content":"Saved answer"}}]}\n\ndata: [DONE]\n\n');
+    const controls = {}; const h = harness([], [wire], null, true, controls); const events = [];
+    controls.bridge.on('ask:messageSaved', event => events.push(event));
+    await h.service.sendMessage('Question with a screen');
+    assert.deepEqual(events.map(event => [event.sessionId, event.owner, event.role]), [['active-listen-session', 'owner-a', 'user'], ['active-listen-session', 'owner-a', 'assistant']]);
+    assert.equal(h.calls.screens.length, 1);
+    assert.equal(h.calls.screens[0][0], 'active-listen-session');
+    assert.equal(h.calls.screens[0][1], 'owner-a');
+});
+
+
+test('closing Ask during pending user/assistant persistence cannot reattach an old Insights session', async t => {
+    for (const role of ['user', 'assistant']) await t.test(role, async () => {
+        let finish, entered; const saving = new Promise(resolve => { entered = resolve; });
+        const pending = new Promise(resolve => { finish = resolve; });
+        const controls = { save: entry => { if (entry.role === role) { entered(); return pending; } } };
+        const wire = Buffer.from('data: {"choices":[{"delta":{"content":"Old draft"}}]}\n\ndata: [DONE]\n\n');
+        const h = harness([], [wire], null, false, controls); const events = [];
+        controls.bridge.on('ask:messageSaved', event => events.push(event));
+        const request = h.service.sendMessage('Old question');
+        await saving; await h.service.closeAskWindow(); finish(); await request;
+        assert.equal(events.filter(event => event.role === role).length, 0);
+    });
 });

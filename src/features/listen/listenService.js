@@ -18,6 +18,7 @@ class ListenService {
         this.isStoppingSession = false;
         this.insightsVisible = false;
 
+        internalBridge.on('ask:messageSaved', event => this.handleChatMessageSaved(event));
         this.setupServiceCallbacks();
         console.log('[ListenService] Service instance created.');
     }
@@ -153,10 +154,12 @@ class ListenService {
             console.log(`[DB] New listen session ensured: ${this.currentSessionId}`);
 
             // Set session ID for summary service
-            this.summaryService.setSessionId(this.currentSessionId);
-            
-            // Reset conversation history
-            this.summaryService.resetConversationHistory();
+            const sameContext = this.summaryService.currentSessionId === sessionId && this.summaryService.sessionOwner === user.uid;
+            if (sameContext) this.summaryService.setRecording(true);
+            else {
+                this.summaryService.setSessionId(this.currentSessionId);
+                this.summaryService.resetConversationHistory();
+            }
 
             console.log('New conversation session started:', this.currentSessionId);
             return true;
@@ -242,6 +245,51 @@ class ListenService {
 
     isSessionActive() {
         return this.sttService.isSessionActive();
+    }
+
+    handleChatMessageSaved({ sessionId, owner, role }) {
+        if (!sessionId || owner !== authService.getCurrentUserId() || (this.currentSessionId && this.currentSessionId !== sessionId)) return;
+        if (this.summaryService.currentSessionId !== sessionId || this.summaryService.sessionOwner !== owner) {
+            this.summaryService.setSessionId(sessionId, { isRecording: this.currentSessionId === sessionId });
+            this.summaryService.resetConversationHistory();
+        }
+        this.summaryService.onChatMessageSaved(role);
+    }
+
+    async ensureInsightsSession() {
+        const owner = authService.getCurrentUserId();
+        const generation = this.sessionGeneration;
+        const contextGeneration = this.summaryService.generation;
+        const pending = this.insightsSessionPending;
+        if (pending && pending.owner === owner && pending.generation === generation && pending.contextGeneration === contextGeneration) return pending.promise;
+        const promise = (async () => {
+            const sessionId = this.currentSessionId || (this.summaryService.sessionOwner === owner && this.summaryService.currentSessionId)
+                || await sessionRepository.getOrCreateActive('ask');
+            const session = await sessionRepository.getById(sessionId);
+            if (owner !== authService.getCurrentUserId() || generation !== this.sessionGeneration || contextGeneration !== this.summaryService.generation) throw new Error('Session changed. Analyze again.');
+            if (!session || session.uid !== owner) throw new Error('This session is unavailable for the current account.');
+            if (this.summaryService.currentSessionId !== sessionId || this.summaryService.sessionOwner !== owner) {
+                this.summaryService.setSessionId(sessionId, { isRecording: this.currentSessionId === sessionId });
+                this.summaryService.resetConversationHistory();
+            }
+            return sessionId;
+        })();
+        this.insightsSessionPending = { owner, generation, contextGeneration, promise };
+        try { return await promise; }
+        finally { if (this.insightsSessionPending?.promise === promise) this.insightsSessionPending = null; }
+    }
+
+    async analyzeInsights(scope = 'entire', { show = false } = {}) {
+        if (show) this.setInsightsVisibility(true);
+        const owner = authService.getCurrentUserId(), generation = this.summaryService.generation;
+        try {
+            await this.ensureInsightsSession();
+            await this.summaryService.requestAnalysis(scope);
+            return { success: true };
+        } catch (error) {
+            if (owner === authService.getCurrentUserId() && generation === this.summaryService.generation) this.summaryService.broadcastState({ phase: 'error', error: error.message, progress: '' });
+            return { success: false, error: error.message };
+        }
     }
 
     setInsightsVisibility(visible) {

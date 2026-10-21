@@ -17,10 +17,10 @@ function harness(platform = 'darwin', stored) {
         on: (channel, callback) => ipc.on(channel, callback),
         removeListener: (channel, callback) => ipc.removeListener(channel, callback),
         async invoke(channel, text) {
-            if (channel === 'insights:toggleVisible') {
+            if (channel === 'insights:refresh') {
                 if (controls.failInvoke) throw new Error('IPC failed');
                 controls.insightsToggles++;
-                controls.insightsVisible = !controls.insightsVisible;
+                controls.insightsVisible = true;
                 ipc.emit('listen:insightsVisibility', {}, controls.insightsVisible);
                 return controls.insightsVisible;
             }
@@ -217,7 +217,7 @@ test('clearing a stopped review resets header through named IPC while hiding Ins
 });
 
 
-test('Insights shortcut toggles its visibility through preload without changing Listen state', async () => {
+test('Insights shortcut opens and refreshes analysis through preload without changing Listen state', async () => {
     for (const [platform, accelerator] of [['darwin', 'Cmd+Shift+I'], ['win32', 'Ctrl+Shift+I']]) {
         const h = harness(platform); await h.service.registerShortcuts();
         const shortcut = h.registered.get(accelerator);
@@ -225,7 +225,7 @@ test('Insights shortcut toggles its visibility through preload without changing 
         shortcut(); await Promise.resolve();
         assert.equal(h.header.insightsVisible, true);
         shortcut(); await Promise.resolve();
-        assert.equal(h.header.insightsVisible, false);
+        assert.equal(h.header.insightsVisible, true);
         assert.equal(h.controls.insightsToggles, 2);
         assert.equal(h.header.listenSessionStatus, 'beforeSession');
         assert.deepEqual(h.requests, []);

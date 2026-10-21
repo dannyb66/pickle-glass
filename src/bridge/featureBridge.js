@@ -115,12 +115,12 @@ module.exports = {
     // Insights controls never start or stop capture.
     ipcMain.handle('insights:getState', () => listenService.summaryService.getState());
     ipcMain.handle('insights:analyze', async (event, scope) => {
-      try { await listenService.summaryService.requestAnalysis(scope); return { success: true }; }
-      catch (error) { return { success: false, error: error.message }; }
+      return listenService.analyzeInsights(scope);
     });
+    ipcMain.handle('insights:setScreen', (event, enabled) => listenService.summaryService.setScreenEnabled(enabled));
     ipcMain.handle('insights:setAuto', (event, enabled) => listenService.summaryService.setAutoEnabled(enabled));
     ipcMain.handle('insights:setVisible', (event, visible) => listenService.setInsightsVisibility(visible));
-    ipcMain.handle('insights:toggleVisible', () => listenService.setInsightsVisibility(!listenService.insightsVisible));
+    ipcMain.handle('insights:refresh', () => listenService.analyzeInsights('entire', { show: true }));
 
     // Listen
     ipcMain.handle('listen:sendMicAudio', async (event, { data, mimeType }) => await listenService.handleSendMicAudioContent(data, mimeType));

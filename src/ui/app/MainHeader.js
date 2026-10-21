@@ -581,7 +581,10 @@ export class MainHeader extends LitElement {
         if (this.wasJustDragged) return;
 
         try {
-            if (window.api) await window.api.mainHeader.toggleInsights();
+            if (window.api) {
+                const result = await window.api.mainHeader.toggleInsights();
+                if (result?.success === false) this.listenError = result.error || 'Insights could not be analyzed.';
+            }
         } catch (error) {
             console.error('IPC invoke for Insights toggle failed:', error);
         }
@@ -680,7 +683,7 @@ export class MainHeader extends LitElement {
                         `}
                 </button>
 
-                <button class="header-actions" style="border:0;background:transparent;color:inherit" title=${`${this.insightsVisible ? 'Hide Live Insights' : 'Show Live Insights'}${this.shortcuts.toggleInsights ? ` (${this.shortcuts.toggleInsights})` : ''}`}
+                <button class="header-actions" style="border:0;background:transparent;color:inherit" title=${`Analyze latest Live Insights${this.shortcuts.toggleInsights ? ` (${this.shortcuts.toggleInsights})` : ''}`}
                     @click=${this._handleInsightsClick} aria-pressed=${this.insightsVisible}>
                     <div class="action-text"><div class="action-text-content">Insights</div></div>
                 </button>

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.7] - 2026-10-20
+
+### Added
+
+- Analyze saved chat, optional audio, pinned interview sources and recent screen snapshots together in Live Insights, without starting Listen.
+- Include screen context by default, using up to five recent Ask screenshots and a fresh manual capture; turn off **Include screen** to omit images. Screenshot retention is bounded and in memory only.
+- Refresh recent insights after each saved AI answer, even with audio off; automatic updates reuse cached screenshots without taking new captures.
+
+### Changed
+
+- Use the header’s **Insights** button or **Cmd+Shift+I** to open the panel and analyze the entire current session. Hide the panel with **×** without stopping capture.
+- Analyze the latest 30 chronological chat/audio items or all saved session text. User questions guide the analysis, while AI answers are treated as unverified drafts.
+
 ## [0.2.6] - 2026-10-20
 
 ### Fixed

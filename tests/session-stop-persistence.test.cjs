@@ -48,7 +48,7 @@ function harness({ saveTranscript = async () => {}, touch = async () => {}, crea
                 events.push(['saved', entry.speaker, entry.text]);
             },
         },
-        '../../bridge/internalBridge': { emit() {} },
+        '../../bridge/internalBridge': new (require('node:events').EventEmitter)(),
         '../../window/windowManager': { windowPool: new Map() },
     });
     listen.currentSessionId = 'session-a';

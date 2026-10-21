@@ -596,6 +596,11 @@ export class ListenView extends LitElement {
         } catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
     }
 
+    async toggleScreen(event) {
+        try { await window.api.insights.setScreen(event.target.checked); }
+        catch (error) { this.actionError = error.message; }
+    }
+
     async toggleAutomatic(event) {
         try { await window.api.insights.setAuto(event.target.checked); }
         catch (error) { this.actionError = error.message; }
@@ -741,14 +746,17 @@ export class ListenView extends LitElement {
                             @change=${event => { this.analysisScope = event.target.value; }}>
                             <option value="recent">Recent conversation</option><option value="entire">Entire session</option>
                         </select>
-                        <button class="analyze-now" ?disabled=${!state.sessionId || busy} @click=${this.analyzeNow}>${busy ? 'Analyzing…' : 'Analyze now'}</button>
+                        <button class="analyze-now" ?disabled=${busy} @click=${this.analyzeNow}>${busy ? 'Analyzing…' : 'Analyze now'}</button>
                         <label><input type="checkbox" .checked=${state.autoEnabled} @change=${this.toggleAutomatic}> Auto-update</label>
+                        <label><input type="checkbox" .checked=${state.screenEnabled !== false} ?disabled=${busy} @change=${this.toggleScreen}> Include screen</label>
                     </div>
                     <div class="analysis-meta" role=${state.error || this.actionError ? 'alert' : 'status'} aria-live="polite">
-                        <span>${state.sessionId ? (state.isRecording ? 'Recording' : 'Stopped · reviewing saved session') : 'Click Listen to start a session.'}</span>
+                        <span>${state.sessionId ? (state.isRecording ? 'Audio recording · Chat included' : 'Audio off · Chat and saved context') : 'Ask a question or analyze your screen. Audio is optional.'}</span>
                         ${state.contextLabel ? html`<span class="context-label">${state.contextLabel}</span>` : ''}
                         ${busy ? html`<span>${state.phase === 'queued' ? 'Queued' : state.progress || 'Analyzing'}</span>` : ''}
-                        ${state.lastUpdated ? html`<span>Updated ${new Date(state.lastUpdated).toLocaleTimeString()} · ${state.scope === 'entire' ? 'Entire session' : 'Recent'}: ${state.coveredTurns}/${state.totalTurns} segments${state.condensed ? ' · condensed in parts' : ''}</span>` : ''}
+                        ${state.lastUpdated ? html`<span>Updated ${new Date(state.lastUpdated).toLocaleTimeString()} · ${state.scope === 'entire' ? 'Entire session' : 'Recent'}: ${state.coveredTurns}/${state.totalTurns} items${state.condensed ? ' · condensed in parts' : ''}</span>` : ''}
+                        ${state.sources ? html`<span>Sources: ${state.sources.chat} chat messages · ${state.sources.audio} audio segments · ${state.sources.screen} recent screen snapshots${state.sources.chatScreens ? ` (${state.sources.chatScreens} from chat)` : ''}</span>` : ''}
+                        ${state.screenNote ? html`<span>${state.screenNote}</span>` : ''}
                         ${state.error || this.actionError ? html`<span class="analysis-error">${this.actionError || state.error}</span>` : ''}
                     </div>
                 </div>

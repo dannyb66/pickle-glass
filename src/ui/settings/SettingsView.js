@@ -1061,7 +1061,7 @@ export class SettingsView extends LitElement {
             { name: 'Show / Hide', accelerator: this.shortcuts.toggleVisibility },
             { name: 'Ask Anything', accelerator: this.shortcuts.nextStep },
             { name: 'Listen / Stop / Done', accelerator: this.shortcuts.toggleListen },
-            { name: 'Show / Hide Insights', accelerator: this.shortcuts.toggleInsights },
+            { name: 'Analyze Live Insights', accelerator: this.shortcuts.toggleInsights },
             { name: 'Scroll Up Response', accelerator: this.shortcuts.scrollUp },
             { name: 'Scroll Down Response', accelerator: this.shortcuts.scrollDown },
         ];
