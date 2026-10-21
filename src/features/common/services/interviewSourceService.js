@@ -25,7 +25,12 @@ function result(name, text, parser) {
 }
 async function importFile(filePath) {
     const stat = await fs.stat(filePath); if (!stat.isFile() || stat.size > MAX_BYTES) throw new Error('Choose a document smaller than 2 MiB.');
-    const bytes = await fs.readFile(filePath); const name = path.basename(filePath); const ext = path.extname(name).toLowerCase();
+    return importDocument(path.basename(filePath), await fs.readFile(filePath));
+}
+async function importDocument(name, bytes) {
+    if (typeof name !== 'string' || !Buffer.isBuffer(bytes) || bytes.length > MAX_BYTES) throw new Error('Choose a document smaller than 2 MiB.');
+    name = path.basename(name);
+    const ext = path.extname(name).toLowerCase();
     if (['.txt', '.md'].includes(ext)) return result(name, new TextDecoder('utf-8', { fatal: true }).decode(bytes), 'utf8-v1');
     if (ext === '.pdf') throw new Error('PDF import is not supported yet. Export the PDF as text or paste its readable content. DOCX, Markdown and UTF-8 text are supported.');
     if (ext !== '.docx') throw new Error('Choose DOCX, Markdown or UTF-8 text, or paste the content.');
@@ -85,4 +90,4 @@ async function fetchJobDescription(input, options = {}) {
     if (response.status !== 200 || !/text\/(html|plain)/i.test(response.type)) throw new Error('Job page was unavailable or unreadable. Paste the JD instead.');
     return { ...result('Job description', /html/i.test(response.type) ? htmlText(response.body) : response.body, 'public-https-text-v1'), url: url.href };
 }
-module.exports = { importFile, fetchJobDescription, isPublic, htmlText, decode, MAX_BYTES };
+module.exports = { importDocument, importFile, fetchJobDescription, isPublic, htmlText, decode, MAX_BYTES };

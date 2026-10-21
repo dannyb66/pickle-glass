@@ -63,6 +63,7 @@ class AuthService {
                     await require('../../ask/askService').closeAskWindow();
                     const listen = require('../../listen/listenService');
                     if (listen.currentSessionId) await listen.closeSession();
+                    listen.clearReviewedSession();
                 }
 
                 if (user) {

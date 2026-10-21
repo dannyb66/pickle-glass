@@ -6,6 +6,7 @@ const os = require('os');
 const shortcutsService = require('../features/shortcuts/shortcutsService');
 const internalBridge = require('../bridge/internalBridge');
 const permissionRepository = require('../features/common/repositories/permission');
+const { shouldOpenDevTools } = require('../startupOptions');
 
 /* ────────────────[ GLASS BYPASS ]─────────────── */
 let liquidGlass;
@@ -102,6 +103,8 @@ const adjustWindowHeight = (winName, targetHeight) => {
 
 
 function setupWindowController(windowPool, layoutManager, movementManager) {
+    let headerResizeOriginalResizable;
+    let headerResizeGeneration = 0;
     internalBridge.on('window:requestVisibility', ({ name, visible }) => {
         handleWindowVisibilityRequest(windowPool, layoutManager, movementManager, name, visible);
     });
@@ -156,16 +159,21 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
 
     internalBridge.on('window:resizeHeaderWindow', ({ width, height }) => {
         const header = windowPool.get('header');
-        if (!header || movementManager.isAnimating) return;
+        if (!header || header.isDestroyed()) return;
 
         const newHeaderBounds = layoutManager.calculateHeaderResize(header, { width, height });
         
-        const wasResizable = header.isResizable();
-        if (!wasResizable) header.setResizable(true);
+        // The movement manager cancels this window's previous animation. Always
+        // accept the latest target, including setup → main during a resize.
+        const request = ++headerResizeGeneration;
+        if (headerResizeOriginalResizable === undefined) headerResizeOriginalResizable = header.isResizable();
+        if (!header.isResizable()) header.setResizable(true);
 
         movementManager.animateWindowBounds(header, newHeaderBounds, {
             onComplete: () => {
-                if (!wasResizable) header.setResizable(false);
+                if (request !== headerResizeGeneration || header.isDestroyed()) return;
+                header.setResizable(headerResizeOriginalResizable);
+                headerResizeOriginalResizable = undefined;
                 updateChildWindowLayouts(true);
             }
         });
@@ -482,10 +490,11 @@ function createFeatureWindows(header, namesToCreate) {
                         }
                     });
                 }
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     listen.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('listen', listen);
+                for (const event of ['show', 'focus']) listen.on(event, () => internalBridge.emit('window:featurePanelActivated', { name: 'listen' }));
                 break;
             }
 
@@ -515,10 +524,11 @@ function createFeatureWindows(header, namesToCreate) {
                 }
                 
                 // Open DevTools in development
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     ask.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('ask', ask);
+                for (const event of ['show', 'focus']) ask.on(event, () => internalBridge.emit('window:featurePanelActivated', { name: 'ask' }));
                 break;
             }
 
@@ -550,7 +560,7 @@ function createFeatureWindows(header, namesToCreate) {
                 }
                 windowPool.set('settings', settings);  
 
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     settings.webContents.openDevTools({ mode: 'detach' });
                 }
                 break;
@@ -588,7 +598,7 @@ function createFeatureWindows(header, namesToCreate) {
                 }
 
                 windowPool.set('shortcut-settings', shortcutEditor);
-                if (!app.isPackaged) {
+                if (shouldOpenDevTools(app.isPackaged)) {
                     shortcutEditor.webContents.openDevTools({ mode: 'detach' });
                 }
                 break;
@@ -639,7 +649,7 @@ function getCurrentDisplay(window) {
 
 function createWindows() {
     const HEADER_HEIGHT        = 47;
-    const DEFAULT_WINDOW_WIDTH = 353;
+    const DEFAULT_WINDOW_WIDTH = 425;
 
     const primaryDisplay = screen.getPrimaryDisplay();
     const { y: workAreaY, width: screenWidth } = primaryDisplay.workArea;
@@ -722,8 +732,8 @@ function createWindows() {
     header.setContentProtection(isContentProtectionOn);
     header.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     
-    // Open DevTools in development
-    if (!app.isPackaged) {
+    // Developer tools are opt-in for source launches.
+    if (shouldOpenDevTools(app.isPackaged)) {
         header.webContents.openDevTools({ mode: 'detach' });
     }
 

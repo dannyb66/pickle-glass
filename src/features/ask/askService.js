@@ -128,8 +128,11 @@ class AskService {
     constructor() {
         this.abortController = null;
         this.requestSessionId = null;
+        this.reviewSession = null;
+        internalBridge.on?.('listen:sessionStarted', () => this.clearReviewContext());
         interviewContext.on('invalidated', sessions => {
             if (sessions.includes(this.requestSessionId)) this.abortController?.abort('Interview context deleted');
+            if (sessions.includes(this.reviewSession?.id)) this.clearReviewContext();
         });
         this.state = {
             isVisible: false,
@@ -163,6 +166,8 @@ class AskService {
 
         if (askWindow && askWindow.isVisible() && hasContent) {
             this.state.showTextInput = !this.state.showTextInput;
+            // DOM focus alone cannot receive typing while another window is active.
+            if (this.state.showTextInput) askWindow.focus();
             this._broadcastState();
         } else {
             if (askWindow && askWindow.isVisible()) {
@@ -180,7 +185,22 @@ class AskService {
         }
     }
 
+    clearReviewContext() {
+        if (this.reviewSession?.id === this.requestSessionId) this.abortController?.abort('Reviewed session changed');
+        this.reviewSession = null;
+    }
+
+    async sendMessageForSession(userPrompt, sessionId) {
+        const owner = require('../common/services/authService').getCurrentUserId();
+        const session = await sessionRepository.getById(sessionId);
+        if (!session || session.uid !== owner || owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('This reviewed session is unavailable for the current account.');
+        interviewContext.snapshot(sessionId);
+        this.reviewSession = { id: sessionId, owner };
+        return this.sendMessage(userPrompt);
+    }
+
     async closeAskWindow () {
+            this.clearReviewContext();
             if (this.abortController) {
                 this.abortController.abort('Window closed by user');
                 this.abortController = null;
@@ -221,6 +241,7 @@ class AskService {
      * @returns {Promise<{success: boolean, response?: string, error?: string}>}
      */
     async sendMessage(userPrompt, conversationHistoryRaw = null) {
+        const requestOwner = require('../common/services/authService').getCurrentUserId();
         internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
@@ -228,6 +249,7 @@ class AskService {
             isStreaming: false,
             currentQuestion: userPrompt,
             currentResponse: '',
+            contextLabel: '',
             showTextInput: false,
         };
         this._broadcastState();
@@ -244,9 +266,18 @@ class AskService {
         try {
             console.log(`[AskService] 🤖 Processing message: ${userPrompt.substring(0, 50)}...`);
 
-            sessionId = await sessionRepository.getOrCreateActive('ask');
+            const review = this.reviewSession;
+            if (review) {
+                const session = await sessionRepository.getById(review.id);
+                if (review !== this.reviewSession || !session || session.uid !== review.owner || review.owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Reviewed session changed. Reopen it before asking.');
+                sessionId = review.id;
+            } else {
+                sessionId = await sessionRepository.getOrCreateActive('ask');
+            }
             this.requestSessionId = sessionId;
             const interview = interviewContext.context(sessionId);
+            this.state.contextLabel = interview.profile ? `Interview: ${interview.profile.name} · v${interview.profile.revision}` : 'Generic mode';
+            this._broadcastState();
             // Normal Ask requests include captured audio from this active session.
             // An explicit array (including [] for screen-only Ask) remains authoritative.
             if (!Array.isArray(conversationHistoryRaw)) {
@@ -256,7 +287,10 @@ class AskService {
                     .filter(turn => typeof turn.text === 'string' && turn.text.trim())
                     .map(turn => `${turn.speaker || 'speaker'}: ${turn.text.trim()}`);
             }
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             await askRepository.addAiMessage({ sessionId, role: 'user', content: userPrompt.trim() });
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
+            internalBridge.emit('ask:messageSaved', { sessionId, owner: requestOwner, role: 'user' });
             console.log(`[AskService] DB: Saved user prompt to session ${sessionId}`);
             
             const modelInfo = await modelStateService.getCurrentModelInfo('llm');
@@ -266,7 +300,9 @@ class AskService {
             console.log(`[AskService] Using model: ${modelInfo.model} for provider: ${modelInfo.provider}`);
 
             const screenshotResult = await captureScreenshot({ quality: 'medium' });
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
+            if (screenshotBase64) require('../common/services/insightsScreenContext').remember(sessionId, requestOwner, screenshotResult);
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
@@ -319,7 +355,7 @@ class AskService {
                     reader.cancel(signal.reason).catch(() => { /* 이미 취소된 경우의 오류는 무시 */ });
                 });
 
-                await this._processStream(reader, askWin, sessionId, signal);
+                await this._processStream(reader, askWin, sessionId, signal, requestOwner);
                 return { success: true };
 
             } catch (multimodalError) {
@@ -348,7 +384,7 @@ class AskService {
                         fallbackReader.cancel(signal.reason).catch(() => {});
                     });
 
-                    await this._processStream(fallbackReader, askWin, sessionId, signal);
+                    await this._processStream(fallbackReader, askWin, sessionId, signal, requestOwner);
                     return { success: true };
                 } else {
                     // 다른 종류의 에러이거나 스크린샷이 없었다면 그대로 throw
@@ -385,7 +421,7 @@ class AskService {
      * @returns {Promise<void>}
      * @private
      */
-    async _processStream(reader, askWin, sessionId, signal) {
+    async _processStream(reader, askWin, sessionId, signal, requestOwner) {
         const decoder = new TextDecoder();
         let fullResponse = '';
 
@@ -441,10 +477,11 @@ class AskService {
                 this.state.currentResponse = fullResponse;
                 this._broadcastState();
             }
-            if (fullResponse && !signal.aborted) {
+            if (fullResponse && !signal.aborted && requestOwner === require('../common/services/authService').getCurrentUserId()) {
                  try {
                     interviewContext.snapshot(sessionId);
                     await askRepository.addAiMessage({ sessionId, role: 'assistant', content: fullResponse });
+                    if (!signal.aborted && requestOwner === require('../common/services/authService').getCurrentUserId()) internalBridge.emit('ask:messageSaved', { sessionId, owner: requestOwner, role: 'assistant' });
                     console.log(`[AskService] DB: Saved partial or full assistant response to session ${sessionId} after stream ended.`);
                 } catch(dbError) {
                     console.error("[AskService] DB: Failed to save assistant response after stream ended:", dbError);

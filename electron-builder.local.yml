@@ -1,0 +1,19 @@
+extends: ./electron-builder.yml
+
+directories:
+    output: dist/local
+    app: dist/local-app
+
+# Use the installed Electron runtime and native modules already built for it.
+electronDist: node_modules/electron/dist
+npmRebuild: false
+publish: null
+extraMetadata:
+    glassLocalBuild: true
+
+mac:
+    # The local build script applies an ad-hoc signature after packaging.
+    identity: null
+    target:
+        - target: dir
+          arch: arm64

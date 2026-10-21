@@ -14,6 +14,7 @@ function createApp(eventBridge) {
         credentials: true,
     }));
 
+    app.use('/api/interviews', express.json({ limit: '3mb' }));
     app.use(express.json());
 
     app.get('/', (req, res) => {
@@ -31,6 +32,7 @@ function createApp(eventBridge) {
     app.use('/api/user', require('./routes/user'));
     app.use('/api/conversations', require('./routes/conversations'));
     app.use('/api/presets', require('./routes/presets'));
+    app.use('/api/interviews', require('./routes/interviews'));
 
     app.get('/api/sync/status', (req, res) => {
         res.json({

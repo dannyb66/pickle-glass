@@ -18,7 +18,7 @@ function addTranscript({ uid, sessionId, speaker, text }) {
 
 function getAllTranscriptsBySessionId(sessionId) {
     const db = sqliteClient.getDb();
-    const query = "SELECT * FROM transcripts WHERE session_id = ? ORDER BY start_at ASC";
+    const query = "SELECT * FROM transcripts WHERE session_id = ? ORDER BY start_at ASC, rowid ASC";
     return db.prepare(query).all(sessionId);
 }
 

@@ -61,7 +61,7 @@ class InterviewContextService extends EventEmitter {
     }
     activeLocalSession() {
         const uid = this.uid(); this.repo();
-        return this.getDb().prepare('SELECT s.id FROM sessions s JOIN interview_session_context c ON c.session_id=s.id WHERE c.uid=? AND s.uid=? AND s.ended_at IS NULL ORDER BY s.started_at DESC LIMIT 1').get(uid, uid)?.id || null;
+        return this.getDb().prepare('SELECT s.id FROM sessions s JOIN interview_session_context c ON c.session_id=s.id WHERE c.uid=? AND s.uid=? AND c.invalid=0 AND s.ended_at IS NULL ORDER BY s.started_at DESC LIMIT 1').get(uid, uid)?.id || null;
     }
     ensureSession(type, forceNew = false) {
         const active = !forceNew && this.activeLocalSession();

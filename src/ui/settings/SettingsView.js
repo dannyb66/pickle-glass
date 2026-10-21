@@ -1060,6 +1060,8 @@ export class SettingsView extends LitElement {
         return [
             { name: 'Show / Hide', accelerator: this.shortcuts.toggleVisibility },
             { name: 'Ask Anything', accelerator: this.shortcuts.nextStep },
+            { name: 'Listen / Stop / Done', accelerator: this.shortcuts.toggleListen },
+            { name: 'Analyze Live Insights', accelerator: this.shortcuts.toggleInsights },
             { name: 'Scroll Up Response', accelerator: this.shortcuts.scrollUp },
             { name: 'Scroll Down Response', accelerator: this.shortcuts.scrollDown },
         ];
@@ -1418,7 +1420,7 @@ export class SettingsView extends LitElement {
 
                 <div class="buttons-section">
                     <button class="settings-button full-width" @click=${() => window.api.interview.open()}>
-                        <span>Interview Profiles</span>
+                        <span>Interview Context</span>
                     </button>
                     <button class="settings-button full-width" @click=${this.handlePersonalize}>
                         <span>Personalize / Meeting Notes</span>

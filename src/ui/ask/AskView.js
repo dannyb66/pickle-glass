@@ -1,10 +1,12 @@
 import { html, css, LitElement } from '../../ui/assets/lit-core-2.7.4.min.js';
+import '../common/ResponseFontControls.js';
 import { parser, parser_write, parser_end, default_renderer } from '../../ui/assets/smd.js';
 
 export class AskView extends LitElement {
     static properties = {
         currentResponse: { type: String },
         currentQuestion: { type: String },
+        contextLabel: { type: String },
         isLoading: { type: Boolean },
         copyState: { type: String },
         isHovering: { type: Boolean },
@@ -20,7 +22,7 @@ export class AskView extends LitElement {
         :host {
             display: block;
             width: 100%;
-            height: 100%;
+            height: 100vh;
             color: white;
             transform: translate3d(0, 0, 0);
             backface-visibility: hidden;
@@ -119,7 +121,7 @@ export class AskView extends LitElement {
 
         .response-container code {
             font-family: 'Monaco', 'Menlo', 'Consolas', monospace !important;
-            font-size: 11px !important;
+            font-size: calc(11px * var(--ai-response-scale, 1)) !important;
             background: transparent !important;
             white-space: pre !important;
             word-wrap: normal !important;
@@ -273,6 +275,7 @@ export class AskView extends LitElement {
             align-items: center;
             gap: 8px;
             flex: 1;
+            min-width: 0;
             justify-content: flex-end;
         }
 
@@ -365,13 +368,15 @@ export class AskView extends LitElement {
             padding: 16px;
             padding-left: 48px;
             overflow-y: auto;
-            font-size: 14px;
+            font-size: calc(14px * var(--ai-response-scale, 1));
             line-height: 1.6;
             background: transparent;
             min-height: 0;
-            max-height: 400px;
+            overscroll-behavior: contain;
             position: relative;
         }
+
+        .response-header, .text-input-container, .context-label { flex-shrink: 0; }
 
         .response-container.hidden {
             display: none;
@@ -715,6 +720,7 @@ export class AskView extends LitElement {
         super();
         this.currentResponse = '';
         this.currentQuestion = '';
+        this.contextLabel = '';
         this.isLoading = false;
         this.copyState = 'idle';
         this.showTextInput = true;
@@ -784,11 +790,14 @@ export class AskView extends LitElement {
                   }
             });
 
-            window.api.askView.onScrollResponseUp(() => this.handleScroll('up'));
-            window.api.askView.onScrollResponseDown(() => this.handleScroll('down'));
+            this._scrollUp = () => this.handleScroll('up');
+            this._scrollDown = () => this.handleScroll('down');
+            window.api.askView.onScrollResponseUp(this._scrollUp);
+            window.api.askView.onScrollResponseDown(this._scrollDown);
             window.api.askView.onAskStateUpdate((event, newState) => {
                 this.currentResponse = newState.currentResponse;
                 this.currentQuestion = newState.currentQuestion;
+                this.contextLabel = newState.contextLabel || '';
                 this.isLoading       = newState.isLoading;
                 this.isStreaming     = newState.isStreaming;
               
@@ -832,8 +841,8 @@ export class AskView extends LitElement {
         if (window.api) {
             window.api.askView.removeOnAskStateUpdate(this.handleAskStateUpdate);
             window.api.askView.removeOnShowTextInput(this.handleShowTextInput);
-            window.api.askView.removeOnScrollResponseUp(this.handleScroll);
-            window.api.askView.removeOnScrollResponseDown(this.handleScroll);
+            window.api.askView.removeOnScrollResponseUp(this._scrollUp);
+            window.api.askView.removeOnScrollResponseDown(this._scrollDown);
             console.log('✅ AskView: IPC 이벤트 리스너 제거 필요');
         }
     }
@@ -1027,6 +1036,7 @@ export class AskView extends LitElement {
     }
 
     renderStreamingMarkdown(responseContainer) {
+        const followLatest = responseContainer.scrollHeight - responseContainer.scrollTop - responseContainer.clientHeight <= 24;
         try {
             // 파서가 없거나 컨테이너가 변경되었으면 새로 생성
             if (!this.smdParser || this.smdContainer !== responseContainer) {
@@ -1065,7 +1075,7 @@ export class AskView extends LitElement {
             }
 
             // 스크롤을 맨 아래로
-            responseContainer.scrollTop = responseContainer.scrollHeight;
+            if (followLatest) responseContainer.scrollTop = responseContainer.scrollHeight;
             
         } catch (error) {
             console.error('Error rendering streaming markdown:', error);
@@ -1346,6 +1356,7 @@ export class AskView extends LitElement {
                         <span class="response-label">${headerText}</span>
                     </div>
                     <div class="header-right">
+                        <response-font-controls @response-font-size-changed=${() => this.adjustWindowHeightThrottled()}></response-font-controls>
                         <span class="question-text">${this.getTruncatedQuestion(this.currentQuestion)}</span>
                         <div class="header-controls">
                             <button class="copy-button ${this.copyState === 'copied' ? 'copied' : ''}" @click=${this.handleCopy}>
@@ -1376,7 +1387,8 @@ export class AskView extends LitElement {
                 </div>
 
                 <!-- Response Container -->
-                <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer">
+                ${hasResponse && this.contextLabel ? html`<div class="context-label" title=${this.contextLabel} style="font-size:11px;opacity:0.75;padding:0 16px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this.contextLabel}</div>` : ''}
+                <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer" tabindex="0" aria-label="Chat response">
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
 
@@ -1418,7 +1430,8 @@ export class AskView extends LitElement {
             const responseHeight = responseEl.scrollHeight;
             const inputHeight = (inputEl && !inputEl.classList.contains('hidden')) ? inputEl.offsetHeight : 0;
 
-            const idealHeight = headerHeight + responseHeight + inputHeight;
+            const contextHeight = this.shadowRoot.querySelector('.context-label')?.offsetHeight || 0;
+            const idealHeight = headerHeight + contextHeight + responseHeight + inputHeight;
 
             const targetHeight = Math.min(700, idealHeight);
 

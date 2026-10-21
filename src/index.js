@@ -28,6 +28,8 @@ const sessionRepository = require('./features/common/repositories/session');
 const modelStateService = require('./features/common/services/modelStateService');
 const featureBridge = require('./bridge/featureBridge');
 const windowBridge = require('./bridge/windowBridge');
+const { shouldCheckForUpdates } = require('./startupOptions');
+const { glassLocalBuild = false } = require('../package.json');
 
 // Global variables
 const eventBridge = new EventEmitter();
@@ -324,7 +326,7 @@ function setupWebDataHandlers() {
 
     const handleRequest = async (channel, responseChannel, payload) => {
         let result;
-        // const currentUserId = authService.getCurrentUserId(); // No longer needed here
+        const requestOwner = authService.getCurrentUserId();
         try {
             switch (channel) {
                 // SESSION
@@ -434,6 +436,7 @@ function setupWebDataHandlers() {
                 default:
                     throw new Error(`Unknown web data channel: ${channel}`);
             }
+            if (requestOwner !== authService.getCurrentUserId()) throw new Error('User changed while loading session data. Retry for the current account.');
             eventBridge.emit(responseChannel, { success: true, data: result });
         } catch (error) {
             console.error(`Error handling web data request for ${channel}:`, error);
@@ -589,21 +592,10 @@ function handlePersonalizeFromUrl(params) {
 
 async function startWebStack() {
   console.log('NODE_ENV =', process.env.NODE_ENV); 
-  const isDev = !app.isPackaged;
-
-  const getAvailablePort = () => {
-    return new Promise((resolve, reject) => {
-      const server = require('net').createServer();
-      server.listen(0, (err) => {
-        if (err) reject(err);
-        const port = server.address().port;
-        server.close(() => resolve(port));
-      });
-    });
-  };
+  const { getAvailablePort, DEFAULT_WEB_PORT, createFrontend } = require('./features/common/services/localWebServer');
 
   const apiPort = await getAvailablePort();
-  const frontendPort = await getAvailablePort();
+  const frontendPort = await getAvailablePort(DEFAULT_WEB_PORT);
 
   console.log(`🔧 Allocated ports: API=${apiPort}, Frontend=${frontendPort}`);
 
@@ -637,35 +629,12 @@ async function startWebStack() {
   }
 
   const runtimeConfig = {
-    API_URL: `http://localhost:${apiPort}`,
+    API_URL: `http://localhost:${frontendPort}`,
     WEB_URL: `http://localhost:${frontendPort}`,
     timestamp: Date.now()
   };
   
-  // 쓰기 가능한 임시 폴더에 런타임 설정 파일 생성
-  const tempDir = app.getPath('temp');
-  const configPath = path.join(tempDir, 'runtime-config.json');
-  fs.writeFileSync(configPath, JSON.stringify(runtimeConfig, null, 2));
-  console.log(`📝 Runtime config created in temp location: ${configPath}`);
-
-  const frontSrv = express();
-  
-  // 프론트엔드에서 /runtime-config.json을 요청하면 임시 폴더의 파일을 제공
-  frontSrv.get('/runtime-config.json', (req, res) => {
-    res.sendFile(configPath);
-  });
-
-  frontSrv.use((req, res, next) => {
-    if (req.path.indexOf('.') === -1 && req.path !== '/') {
-      const htmlPath = path.join(staticDir, req.path + '.html');
-      if (fs.existsSync(htmlPath)) {
-        return res.sendFile(htmlPath);
-      }
-    }
-    next();
-  });
-  
-  frontSrv.use(express.static(staticDir));
+  const frontSrv = createFrontend({ nodeApi, staticDir, runtimeConfig });
   
   const frontendServer = await new Promise((resolve, reject) => {
     const server = frontSrv.listen(frontendPort, '127.0.0.1', () => resolve(server));
@@ -695,8 +664,8 @@ async function startWebStack() {
 
 // Auto-update initialization
 async function initAutoUpdater() {
-    if (process.env.NODE_ENV === 'development') {
-        console.log('Development environment, skipping auto-updater.');
+    if (!shouldCheckForUpdates(app.isPackaged, glassLocalBuild)) {
+        console.log('Source or local build, skipping auto-updater.');
         return;
     }
 

@@ -10,15 +10,30 @@ class ShortcutsService {
         this.mouseEventsIgnored = false;
         this.windowPool = null;
         this.allWindowVisibility = true;
+        this.recentFeaturePanels = [];
     }
 
     initialize(windowPool) {
         this.windowPool = windowPool;
+        internalBridge.on('window:featurePanelActivated', ({ name }) => {
+            if (!['ask', 'listen'].includes(name)) return;
+            this.recentFeaturePanels = [name, ...this.recentFeaturePanels.filter(panel => panel !== name)];
+        });
         internalBridge.on('reregister-shortcuts', () => {
             console.log('[ShortcutsService] Reregistering shortcuts due to header state change.');
             this.registerShortcuts();
         });
         console.log('[ShortcutsService] Initialized with dependencies and event listener.');
+    }
+
+    scrollResponse(direction) {
+        const panels = ['ask', 'listen'].filter(name => {
+            const win = this.windowPool?.get(name);
+            return win && !win.isDestroyed() && win.isVisible() && !win.isMinimized?.();
+        });
+        const focused = panels.find(name => this.windowPool.get(name).isFocused?.());
+        const target = focused || this.recentFeaturePanels.find(name => panels.includes(name)) || panels[0];
+        if (target) this.windowPool.get(target).webContents.send(`scroll-response-${direction}`);
     }
 
     async openShortcutSettingsWindow () {
@@ -66,6 +81,8 @@ class ShortcutsService {
             toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
             toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
             nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+            toggleListen: isMac ? 'Cmd+Shift+L' : 'Ctrl+Shift+L',
+            toggleInsights: isMac ? 'Cmd+Shift+I' : 'Ctrl+Shift+I',
             manualScreenshot: isMac ? 'Cmd+Shift+S' : 'Ctrl+Shift+S',
             previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
@@ -92,7 +109,7 @@ class ShortcutsService {
         const defaults = this.getDefaultKeybinds();
         let needsUpdate = false;
         for (const action in defaults) {
-            if (!keybinds[action]) {
+            if (!Object.prototype.hasOwnProperty.call(keybinds, action)) {
                 keybinds[action] = defaults[action];
                 needsUpdate = true;
             }
@@ -210,24 +227,30 @@ class ShortcutsService {
                 case 'toggleVisibility':
                     callback = () => this.toggleAllWindowsVisibility();
                     break;
+                case 'toggleListen':
+                    callback = () => {
+                        const headerWindow = this.windowPool.get('header');
+                        if (headerWindow && !headerWindow.isDestroyed()) {
+                            headerWindow.webContents.send('shortcut:listen');
+                        }
+                    };
+                    break;
+                case 'toggleInsights':
+                    callback = () => {
+                        const headerWindow = this.windowPool.get('header');
+                        if (headerWindow && !headerWindow.isDestroyed()) {
+                            headerWindow.webContents.send('shortcut:insights');
+                        }
+                    };
+                    break;
                 case 'nextStep':
                     callback = () => askService.toggleAskButton(true);
                     break;
                 case 'scrollUp':
-                    callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-up');
-                        }
-                    };
+                    callback = () => this.scrollResponse('up');
                     break;
                 case 'scrollDown':
-                    callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-down');
-                        }
-                    };
+                    callback = () => this.scrollResponse('down');
                     break;
                 case 'moveUp':
                     callback = () => { if (header && header.isVisible()) internalBridge.emit('window:moveStep', { direction: 'up' }); };

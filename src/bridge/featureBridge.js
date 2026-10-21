@@ -17,9 +17,7 @@ module.exports = {
   // Renderer로부터의 요청을 수신하고 서비스로 전달
   initialize() {
     // Local interview profiles are deliberately separate from cloud preset CRUD.
-    const interview = require('../features/common/services/interviewContextService');
     const interviewSources = require('../features/common/services/interviewSourceService');
-    const localSessions = require('../features/common/repositories/session/sqlite.repository');
     const path = require('node:path');
     const { fileURLToPath } = require('node:url');
     const interviewHandler = (channel, fn) => ipcMain.handle(channel, async (event, ...args) => {
@@ -30,41 +28,16 @@ module.exports = {
         return { success: true, data: await fn(...args) };
       } catch (error) { return { success: false, error: error.message }; }
     });
-    interviewHandler('interview:open', () => { require('../features/common/services/interviewWindow').open(); return true; });
-    interviewHandler('interview:list', () => interview.list());
-    interviewHandler('interview:save', profile => interview.save(profile));
-    interviewHandler('interview:select', id => interview.select(id));
-    interviewHandler('interview:preview', id => interview.preview(id));
-    interviewHandler('interview:remove', async id => {
-      const result = interview.remove(id);
-      if (result.invalidatedSessions.includes(listenService.currentSessionId)) await listenService.closeSession();
-      return result;
-    });
+    interviewHandler('interview:open', async () => { await require('../features/common/services/interviewWindow').open(); return true; });
+    const interviewActions = require('../features/common/services/interviewActions');
+    for (const action of ['list', 'save', 'select', 'preview', 'remove', 'fetch-jd', 'start', 'stop']) {
+      interviewHandler(`interview:${action}`, payload => interviewActions.run(action, payload));
+    }
     interviewHandler('interview:import', async () => {
-      const selection = await require('electron').dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Interview source', extensions: ['docx', 'txt', 'md', 'pdf'] }] });
-      return selection.canceled ? null : interviewSources.importFile(selection.filePaths[0]);
-    });
-    interviewHandler('interview:fetch-jd', url => interviewSources.fetchJobDescription(url));
-    interviewHandler('interview:start', async () => {
       const owner = authService.getCurrentUserId();
-      const checkOwner = () => { if (owner !== authService.getCurrentUserId()) throw new Error('User changed. Start cancelled.'); };
-      if (!interview.selected()) throw new Error('Select a saved, reviewed interview profile first.');
-      if (listenService.currentSessionId) await listenService.closeSession();
-      checkOwner();
-      await askService.closeAskWindow();
-      checkOwner();
-      localSessions.endAllActiveSessions(authService.getCurrentUserId());
-      const sessionId = interview.ensureSession('listen', true);
-      await listenService.handleListenRequest('Listen');
-      checkOwner();
-      return { sessionId, snapshot: interview.snapshot(sessionId) };
-    });
-    interviewHandler('interview:stop', async () => {
-      if (listenService.currentSessionId) await listenService.closeSession();
-      await askService.closeAskWindow();
-      localSessions.endAllActiveSessions(authService.getCurrentUserId());
-      interview.select(null);
-      return true;
+      const selection = await require('electron').dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Interview source', extensions: ['docx', 'txt', 'md', 'pdf'] }] });
+      if (owner !== authService.getCurrentUserId()) throw new Error('User changed. Import cancelled.');
+      return selection.canceled ? null : interviewSources.importFile(selection.filePaths[0]);
     });
 
     // Settings Service
@@ -88,6 +61,7 @@ module.exports = {
     ipcMain.handle('shortcut:toggleAllWindowsVisibility', async () => await shortcutsService.toggleAllWindowsVisibility());
 
     // Permissions
+    interviewHandler('permission:restart', () => permissionService.restartApplication());
     ipcMain.handle('check-system-permissions', async () => await permissionService.checkSystemPermissions());
     ipcMain.handle('request-microphone-permission', async () => await permissionService.requestMicrophonePermission());
     ipcMain.handle('open-system-preferences', async (event, section) => await permissionService.openSystemPreferences(section));
@@ -131,10 +105,23 @@ module.exports = {
 
     // Ask
     ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => await askService.sendMessage(userPrompt));
-    ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => await askService.sendMessage(userPrompt));
+    ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt, sessionId) => {
+      if (!sessionId || sessionId !== listenService.summaryService.currentSessionId) throw new Error('Open the reviewed session before asking about its insights.');
+      return askService.sendMessageForSession(userPrompt, sessionId);
+    });
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());
     ipcMain.handle('ask:closeAskWindow',  async () => await askService.closeAskWindow());
     
+    // Insights controls never start or stop capture.
+    ipcMain.handle('insights:getState', () => listenService.summaryService.getState());
+    ipcMain.handle('insights:analyze', async (event, scope) => {
+      return listenService.analyzeInsights(scope);
+    });
+    ipcMain.handle('insights:setScreen', (event, enabled) => listenService.summaryService.setScreenEnabled(enabled));
+    ipcMain.handle('insights:setAuto', (event, enabled) => listenService.summaryService.setAutoEnabled(enabled));
+    ipcMain.handle('insights:setVisible', (event, visible) => listenService.setInsightsVisibility(visible));
+    ipcMain.handle('insights:refresh', () => listenService.analyzeInsights('entire', { show: true }));
+
     // Listen
     ipcMain.handle('listen:sendMicAudio', async (event, { data, mimeType }) => await listenService.handleSendMicAudioContent(data, mimeType));
     ipcMain.handle('listen:sendSystemAudio', async (event, { data, mimeType }) => {

@@ -7,6 +7,7 @@ export class ListenView extends LitElement {
         :host {
             display: block;
             width: 400px;
+            height: 100vh;
             transform: translate3d(0, 0, 0);
             backface-visibility: hidden;
             transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.2s ease-out;
@@ -200,7 +201,7 @@ export class ListenView extends LitElement {
             gap: 4px;
             align-items: center;
             flex-shrink: 0;
-            width: 120px;
+            width: auto;
             justify-content: flex-end;
             box-sizing: border-box;
             padding: 4px;
@@ -283,6 +284,20 @@ export class ListenView extends LitElement {
             transform: translate(-50%, -50%) scale(1);
         }
 
+        .insights-controls { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,.1); }
+        .analysis-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+        .analysis-actions select, .analyze-now { border: 1px solid rgba(255,255,255,.25); border-radius: 5px;
+            background: #202327; color: white; font: 11px system-ui; padding: 5px 6px; }
+        .analysis-actions label { display: flex; align-items: center; gap: 3px; font-size: 11px; }
+        .analysis-actions input { margin: 0; }
+        .analyze-now { cursor: pointer; }
+        .analyze-now:disabled { opacity: .5; cursor: default; }
+        .analysis-meta { display: flex; flex-direction: column; gap: 3px; padding: 7px 12px; border-top: 1px solid rgba(255,255,255,.08); font-size: 10px; line-height: 1.3; color: #9da5af; }
+        .meta-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .top-bar, .insights-controls, .analysis-meta { flex-shrink: 0; }
+        summary-view, stt-view { flex: 1; min-height: 0; overflow: hidden; }
+        summary-view[hidden], stt-view[hidden] { display: none; }
+        .analysis-error { color: #fca5a5; }
         .timer {
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 10px;
@@ -420,6 +435,9 @@ export class ListenView extends LitElement {
 
     static properties = {
         viewMode: { type: String },
+        analysisState: { type: Object, state: true },
+        analysisScope: { type: String, state: true },
+        actionError: { type: String, state: true },
         isHovering: { type: Boolean },
         isAnimating: { type: Boolean },
         copyState: { type: String },
@@ -434,6 +452,10 @@ export class ListenView extends LitElement {
         this.isSessionActive = false;
         this.hasCompletedRecording = false;
         this.viewMode = 'insights';
+        this.analysisState = { phase: 'idle', sessionId: null, autoEnabled: true, data: null };
+        this.analysisScope = 'entire';
+        this.actionError = '';
+        this.ownerEpoch = 0;
         this.isHovering = false;
         this.isAnimating = false;
         this.elapsedTime = '00:00';
@@ -454,7 +476,29 @@ export class ListenView extends LitElement {
             this.startTimer();
         }
         if (window.api) {
-            window.api.listenView.onSessionStateChanged((event, { isActive }) => {
+            this._scrollUp = () => this.scrollContent('up');
+            this._scrollDown = () => this.scrollContent('down');
+            window.api.insights.onScrollUp(this._scrollUp);
+            window.api.insights.onScrollDown(this._scrollDown);
+            this._insightsStateListener = (event, state) => { this.analysisState = state; this.actionError = ''; };
+            window.api.insights.onState(this._insightsStateListener);
+            this._reloadInsights = async () => {
+                const epoch = this.ownerEpoch;
+                try { const state = await window.api.insights.getState(); if (epoch === this.ownerEpoch) this.analysisState = state; }
+                catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
+            };
+            this._ownerChanging = () => {
+                this.ownerEpoch++;
+                this.actionError = '';
+                this.analysisState = { phase: 'idle', sessionId: null, autoEnabled: true, data: null };
+                this.shadowRoot.querySelector('summary-view')?.resetAnalysis();
+                this.shadowRoot.querySelector('stt-view')?.resetTranscript();
+                this.stopTimer(); this.isSessionActive = false;
+            };
+            window.api.interview.onOwnerChanging(this._ownerChanging);
+            window.api.common.onUserStateChanged(this._reloadInsights);
+            this._reloadInsights();
+            this._sessionStateListener = (event, { isActive }) => {
                 const wasActive = this.isSessionActive;
                 this.isSessionActive = isActive;
 
@@ -475,13 +519,23 @@ export class ListenView extends LitElement {
                     this.stopTimer();
                     this.requestUpdate();
                 }
-            });
+            };
+            window.api.listenView.onSessionStateChanged(this._sessionStateListener);
         }
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         this.stopTimer();
+        this.ownerEpoch++;
+        if (window.api) {
+            window.api.insights.removeOnState(this._insightsStateListener);
+            window.api.insights.removeOnScrollUp(this._scrollUp);
+            window.api.insights.removeOnScrollDown(this._scrollDown);
+            window.api.listenView.removeOnSessionStateChanged(this._sessionStateListener);
+            window.api.interview.removeOnOwnerChanging(this._ownerChanging);
+            window.api.common.removeOnUserStateChanged(this._reloadInsights);
+        }
 
         if (this.adjustHeightThrottle) {
             clearTimeout(this.adjustHeightThrottle);
@@ -526,9 +580,12 @@ export class ListenView extends LitElement {
 
                 const topBarHeight = topBar.offsetHeight;
 
-                const contentHeight = activeContent.scrollHeight;
+                const scroller = activeContent.shadowRoot?.querySelector('.insights-container, .transcription-container');
+                const contentHeight = Math.max(150, scroller?.scrollHeight || activeContent.scrollHeight);
 
-                const idealHeight = topBarHeight + contentHeight;
+                const controlsHeight = (this.shadowRoot.querySelector('.insights-controls')?.offsetHeight || 0)
+                    + (this.shadowRoot.querySelector('.analysis-meta')?.offsetHeight || 0);
+                const idealHeight = topBarHeight + controlsHeight + contentHeight;
 
                 const targetHeight = Math.min(700, idealHeight);
 
@@ -541,6 +598,31 @@ export class ListenView extends LitElement {
             .catch(error => {
                 console.error('Error in adjustWindowHeight:', error);
             });
+    }
+
+    scrollContent(direction) {
+        const view = this.shadowRoot.querySelector(this.viewMode === 'transcript' ? 'stt-view' : 'summary-view');
+        const content = view?.shadowRoot?.querySelector('.insights-container, .transcription-container');
+        if (content) content.scrollTop += direction === 'up' ? -150 : 150;
+    }
+
+    async analyzeNow() {
+        const epoch = this.ownerEpoch;
+        this.actionError = '';
+        try {
+            const result = await window.api.insights.analyze(this.analysisScope);
+            if (epoch === this.ownerEpoch && !result.success) this.actionError = result.error;
+        } catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
+    }
+
+    async toggleScreen(event) {
+        try { await window.api.insights.setScreen(event.target.checked); }
+        catch (error) { this.actionError = error.message; }
+    }
+
+    async toggleAutomatic(event) {
+        try { await window.api.insights.setAuto(event.target.checked); }
+        catch (error) { this.actionError = error.message; }
     }
 
     toggleViewMode() {
@@ -608,7 +690,7 @@ export class ListenView extends LitElement {
     updated(changedProperties) {
         super.updated(changedProperties);
 
-        if (changedProperties.has('viewMode')) {
+        if (changedProperties.has('viewMode') || changedProperties.has('analysisState') || changedProperties.has('actionError')) {
             this.adjustWindowHeight();
         }
     }
@@ -624,6 +706,8 @@ export class ListenView extends LitElement {
     }
 
     render() {
+        const state = this.analysisState;
+        const busy = state.phase === 'queued' || state.phase === 'analyzing';
         const displayText = this.isHovering
             ? this.viewMode === 'transcript'
                 ? 'Copy Transcript'
@@ -656,6 +740,8 @@ export class ListenView extends LitElement {
                                       <span>Show Insights</span>
                                   `}
                         </button>
+                        <button class="toggle-button" title="Hide Live Insights without stopping recording" aria-label="Hide Live Insights"
+                            @click=${() => window.api.insights.setVisible(false)}>×</button>
                         <button
                             class="copy-button ${this.copyState === 'copied' ? 'copied' : ''}"
                             @click=${this.handleCopy}
@@ -673,15 +759,38 @@ export class ListenView extends LitElement {
                     </div>
                 </div>
 
-                <stt-view 
+                <div class="insights-controls">
+                    <div class="analysis-actions">
+                        <select aria-label="Analysis scope" .value=${this.analysisScope} ?disabled=${busy}
+                            @change=${event => { this.analysisScope = event.target.value; }}>
+                            <option value="recent">Recent conversation</option><option value="entire">Entire session</option>
+                        </select>
+                        <button class="analyze-now" ?disabled=${busy} @click=${this.analyzeNow}>${busy ? 'Analyzing…' : 'Analyze now'}</button>
+                        <label><input type="checkbox" .checked=${state.autoEnabled} @change=${this.toggleAutomatic}> Auto-update</label>
+                        <label><input type="checkbox" .checked=${state.screenEnabled !== false} ?disabled=${busy} @change=${this.toggleScreen}> Include screen</label>
+                    </div>
+
+                </div>
+
+                <stt-view ?hidden=${this.viewMode !== 'transcript'}
                     .isVisible=${this.viewMode === 'transcript'}
                     @stt-messages-updated=${this.handleSttMessagesUpdated}
                 ></stt-view>
 
-                <summary-view 
+                <summary-view ?hidden=${this.viewMode !== 'insights'}
+                    @insights-content-resized=${() => this.adjustWindowHeightThrottled()}
+                    .sessionId=${state.sessionId}
+                    .structuredData=${state.data || { summary: [], topic: { header: '', bullets: [] }, actions: [], followUps: [] }}
+                    @response-font-size-changed=${() => this.adjustWindowHeight()}
                     .isVisible=${this.viewMode === 'insights'}
                     .hasCompletedRecording=${this.hasCompletedRecording}
                 ></summary-view>
+                <div class="analysis-meta" role=${state.error || this.actionError ? 'alert' : 'status'} aria-live="polite">
+                    <span class="meta-line">${busy ? (state.phase === 'queued' ? 'Queued' : state.progress || 'Analyzing…') : (state.isRecording ? 'Audio on' : 'Audio off')}${state.lastUpdated ? ` · ${new Date(state.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${state.sources ? ` · Chat ${state.sources.chat} · Audio ${state.sources.audio} · Screens ${state.sources.screen}` : ''}</span>
+                    ${state.contextLabel ? html`<span class="meta-line" title=${state.contextLabel}>${state.contextLabel}${state.lastUpdated ? ` · ${state.coveredTurns}/${state.totalTurns}${state.condensed ? ' · condensed' : ''}` : ''}</span>` : ''}
+                    ${state.screenNote ? html`<span>${state.screenNote}</span>` : ''}
+                    ${state.error || this.actionError ? html`<span class="analysis-error">${this.actionError || state.error}</span>` : ''}
+                </div>
             </div>
         `;
     }

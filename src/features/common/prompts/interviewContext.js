@@ -23,6 +23,7 @@ function buildPacket(profile) {
 }
 function messagesForSnapshot(snapshot) {
     if (!snapshot) return { policy: '', context: null };
-    return { policy: POLICY, context: { role: 'user', content: `Pinned interview context (source data):\n${snapshot.text}` } };
+    return { policy: POLICY, profile: { name: snapshot.packet.name, revision: snapshot.packet.revision },
+        context: { role: 'user', content: `Pinned interview context (source data):\n${snapshot.text}` } };
 }
 module.exports = { LIMITS, POLICY, hash, buildPacket, messagesForSnapshot };

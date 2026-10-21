@@ -3,10 +3,20 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
 
 function harness(transcripts = [], chunks = [], interview = null, failImage = false, controls = {}) {
-    const calls = { sessions: [], prompts: [] };
-    const window = { isDestroyed: () => false, webContents: { send() {} } };
+    const bridge = new EventEmitter();
+    controls.bridge = bridge;
+    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, states: [], screens: [] };
+    const window = {
+        isDestroyed: () => false,
+        isVisible: () => true,
+        focus() { calls.focuses++; },
+        webContents: { send(channel, state) {
+            if (channel === 'ask:stateUpdate') calls.states.push({ ...state });
+        } },
+    };
     const mocks = {
         '../common/services/interviewContextService': { on(event, callback) { if (event === 'invalidated') controls.invalidate = callback; }, context: () => interview || ({ context: null }), snapshot: () => null },
         electron: { BrowserWindow: {}, desktopCapturer: { getSources: async () => failImage ? [{ thumbnail: { toJPEG: () => Buffer.from('synthetic-image'), getSize: () => ({ width: 10, height: 10 }) } }] : [] } },
@@ -15,12 +25,17 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
             if (failImage && calls.prompts.length === 1) throw new Error('image unsupported');
             if (controls.fallback && calls.prompts.length === 2) return controls.fallback;
             let offset=0;
-            return { body: { getReader: () => ({ read: async () => offset<chunks.length ? {done:false,value:chunks[offset++]} : {done:true} }) } };
+            return { body: { getReader: () => ({ cancel: async () => {}, read: async () => offset<chunks.length ? {done:false,value:chunks[offset++]} : {done:true} }) } };
         } }) },
         '../../window/windowManager': { windowPool: new Map([['ask', window]]) },
-        '../../bridge/internalBridge': { emit() {} },
-        '../common/repositories/session': { getOrCreateActive: async () => 'active-listen-session' },
-        './repositories': { addAiMessage: async () => {} },
+        '../../bridge/internalBridge': bridge,
+        '../common/repositories/session': {
+            getOrCreateActive: async () => { calls.activeSessionRequests++; return 'active-listen-session'; },
+            getById: async id => ({ id, uid: controls.sessionOwner || 'owner-a', ended_at: 123 }),
+        },
+        '../common/services/insightsScreenContext': { remember: (...args) => calls.screens.push(args) },
+        '../common/services/authService': { getCurrentUserId: () => controls.owner || 'owner-a' },
+        './repositories': { addAiMessage: async entry => controls.save?.(entry) },
         '../common/prompts/promptBuilder': { getSystemPrompt: (kind, context) => context },
         '../common/services/modelStateService': { getCurrentModelInfo: async () => ({ provider: 'openai', apiKey: 'synthetic', model: 'synthetic' }) },
         '../listen/stt/repositories': { getAllTranscriptsBySessionId: async sessionId => {
@@ -40,6 +55,48 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/features/ask/askService.js'), 'utf8'), sandbox);
     return { service: module.exports, calls };
 }
+
+test('Cmd+Enter activates the Ask window when revealing follow-up input', async t => {
+    for (const content of [{ currentResponse: 'Previous answer' }, { isLoading: true }, { isStreaming: true }]) {
+        await t.test(JSON.stringify(content), async () => {
+            const { service, calls } = harness();
+            Object.assign(service.state, content, { showTextInput: false });
+
+            await service.toggleAskButton(true);
+
+            assert.equal(service.state.showTextInput, true);
+            assert.equal(calls.focuses, 1, 'activate the native window so the focused renderer input receives typing');
+            assert.equal(calls.states.at(-1).showTextInput, true);
+            assert.equal(calls.prompts.length, 0, 'revealing follow-up input must not submit another request');
+        });
+    }
+});
+
+test('Ask button activates revealed follow-up input but does not refocus when hiding it', async () => {
+    const { service, calls } = harness();
+    Object.assign(service.state, { currentResponse: 'Previous answer', showTextInput: false });
+
+    await service.toggleAskButton();
+    assert.equal(calls.focuses, 1);
+
+    await service.toggleAskButton();
+    assert.equal(service.state.showTextInput, false);
+    assert.equal(calls.focuses, 1);
+});
+
+test('Cmd+Enter preserves screen-only submission when the input is already visible', async () => {
+    const { service, calls } = harness();
+    const submissions = [];
+    service.sendMessage = async (...args) => submissions.push(args);
+
+    await service.toggleAskButton(true);
+
+    assert.equal(submissions.length, 1);
+    assert.equal(submissions[0][0], '');
+    assert.equal(Array.isArray(submissions[0][1]), true);
+    assert.equal(submissions[0][1].length, 0);
+    assert.equal(calls.focuses, 0);
+});
 
 test('ordinary Ask includes real stored transcripts from the active session in its model request', async () => {
     const { service, calls } = harness([{ speaker: 'Me', text: 'Audio-only rollback owner is Mira.' }, { speaker: 'Them', text: 'Load is 42 requests per second.' }]);
@@ -117,4 +174,61 @@ test('deleting context while a text fallback awaits headers cancels its reader a
     resolve({ body: { getReader: () => ({ cancel: async () => { cancelled++; }, read: async () => { reads++; return { done: true }; } }) } });
     const result = await request;
     assert.equal(result.success, false); assert.match(result.error, /cancelled/); assert.equal(cancelled, 1); assert.equal(reads, 0);
+});
+
+
+test('insight follow-ups retain the completed reviewed session and its pinned profile across questions', async () => {
+    const controls = {};
+    const h = harness([{ speaker: 'Them', text: 'Persisted final interview question.' }], [], { policy: 'Reviewed policy', context: { role: 'user', content: 'REVIEWED RESUME JD' } }, false, controls);
+    assert.equal((await h.service.sendMessageForSession('Explain this insight.', 'completed-session')).success, true);
+    assert.equal((await h.service.sendMessage('And the failure tradeoff?')).success, true);
+    assert.deepEqual(h.calls.sessions, ['completed-session', 'completed-session']);
+    assert.equal(h.calls.activeSessionRequests, 0, 'review must not create a new generic session');
+    assert.match(h.calls.prompts[0][1].content, /REVIEWED RESUME JD/);
+    assert.match(JSON.stringify(h.calls.prompts[1]), /Persisted final interview question/);
+    controls.bridge.emit('listen:sessionStarted', { sessionId: 'new-listen' });
+    await h.service.sendMessage('New live question.');
+    assert.equal(h.calls.activeSessionRequests, 1);
+    assert.equal(h.calls.sessions.at(-1), 'active-listen-session');
+});
+
+test('review cannot open another owner session or survive an account change', async () => {
+    const controls = { sessionOwner: 'owner-b' };
+    const h = harness([], [], null, false, controls);
+    await assert.rejects(h.service.sendMessageForSession('Read private transcript.', 'foreign'), /unavailable/);
+    assert.equal(h.calls.prompts.length, 0);
+    controls.sessionOwner = 'owner-a';
+    await h.service.sendMessageForSession('Read my transcript.', 'review');
+    controls.owner = 'owner-b';
+    const result = await h.service.sendMessage('More detail.');
+    assert.equal(result.success, false);
+    assert.match(result.error, /Reviewed session changed/);
+    assert.equal(h.calls.prompts.length, 1);
+});
+
+
+test('saved chat events carry the session/owner and successful screenshots become Insights context', async () => {
+    const wire = Buffer.from('data: {"choices":[{"delta":{"content":"Saved answer"}}]}\n\ndata: [DONE]\n\n');
+    const controls = {}; const h = harness([], [wire], null, true, controls); const events = [];
+    controls.bridge.on('ask:messageSaved', event => events.push(event));
+    await h.service.sendMessage('Question with a screen');
+    assert.deepEqual(events.map(event => [event.sessionId, event.owner, event.role]), [['active-listen-session', 'owner-a', 'user'], ['active-listen-session', 'owner-a', 'assistant']]);
+    assert.equal(h.calls.screens.length, 1);
+    assert.equal(h.calls.screens[0][0], 'active-listen-session');
+    assert.equal(h.calls.screens[0][1], 'owner-a');
+});
+
+
+test('closing Ask during pending user/assistant persistence cannot reattach an old Insights session', async t => {
+    for (const role of ['user', 'assistant']) await t.test(role, async () => {
+        let finish, entered; const saving = new Promise(resolve => { entered = resolve; });
+        const pending = new Promise(resolve => { finish = resolve; });
+        const controls = { save: entry => { if (entry.role === role) { entered(); return pending; } } };
+        const wire = Buffer.from('data: {"choices":[{"delta":{"content":"Old draft"}}]}\n\ndata: [DONE]\n\n');
+        const h = harness([], [wire], null, false, controls); const events = [];
+        controls.bridge.on('ask:messageSaved', event => events.push(event));
+        const request = h.service.sendMessage('Old question');
+        await saving; await h.service.closeAskWindow(); finish(); await request;
+        assert.equal(events.filter(event => event.role === role).length, 0);
+    });
 });
