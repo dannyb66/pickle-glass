@@ -22,7 +22,7 @@ export class AskView extends LitElement {
         :host {
             display: block;
             width: 100%;
-            height: 100%;
+            height: 100vh;
             color: white;
             transform: translate3d(0, 0, 0);
             backface-visibility: hidden;
@@ -372,9 +372,11 @@ export class AskView extends LitElement {
             line-height: 1.6;
             background: transparent;
             min-height: 0;
-            max-height: 400px;
+            overscroll-behavior: contain;
             position: relative;
         }
+
+        .response-header, .text-input-container, .context-label { flex-shrink: 0; }
 
         .response-container.hidden {
             display: none;
@@ -788,8 +790,10 @@ export class AskView extends LitElement {
                   }
             });
 
-            window.api.askView.onScrollResponseUp(() => this.handleScroll('up'));
-            window.api.askView.onScrollResponseDown(() => this.handleScroll('down'));
+            this._scrollUp = () => this.handleScroll('up');
+            this._scrollDown = () => this.handleScroll('down');
+            window.api.askView.onScrollResponseUp(this._scrollUp);
+            window.api.askView.onScrollResponseDown(this._scrollDown);
             window.api.askView.onAskStateUpdate((event, newState) => {
                 this.currentResponse = newState.currentResponse;
                 this.currentQuestion = newState.currentQuestion;
@@ -837,8 +841,8 @@ export class AskView extends LitElement {
         if (window.api) {
             window.api.askView.removeOnAskStateUpdate(this.handleAskStateUpdate);
             window.api.askView.removeOnShowTextInput(this.handleShowTextInput);
-            window.api.askView.removeOnScrollResponseUp(this.handleScroll);
-            window.api.askView.removeOnScrollResponseDown(this.handleScroll);
+            window.api.askView.removeOnScrollResponseUp(this._scrollUp);
+            window.api.askView.removeOnScrollResponseDown(this._scrollDown);
             console.log('✅ AskView: IPC 이벤트 리스너 제거 필요');
         }
     }
@@ -1032,6 +1036,7 @@ export class AskView extends LitElement {
     }
 
     renderStreamingMarkdown(responseContainer) {
+        const followLatest = responseContainer.scrollHeight - responseContainer.scrollTop - responseContainer.clientHeight <= 24;
         try {
             // 파서가 없거나 컨테이너가 변경되었으면 새로 생성
             if (!this.smdParser || this.smdContainer !== responseContainer) {
@@ -1070,7 +1075,7 @@ export class AskView extends LitElement {
             }
 
             // 스크롤을 맨 아래로
-            responseContainer.scrollTop = responseContainer.scrollHeight;
+            if (followLatest) responseContainer.scrollTop = responseContainer.scrollHeight;
             
         } catch (error) {
             console.error('Error rendering streaming markdown:', error);
@@ -1383,7 +1388,7 @@ export class AskView extends LitElement {
 
                 <!-- Response Container -->
                 ${hasResponse && this.contextLabel ? html`<div class="context-label" title=${this.contextLabel} style="font-size:11px;opacity:0.75;padding:0 16px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this.contextLabel}</div>` : ''}
-                <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer">
+                <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer" tabindex="0" aria-label="Chat response">
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
 

@@ -82,8 +82,11 @@ export class SummaryView extends LitElement {
             padding: 12px 16px 16px 16px;
             position: relative;
             z-index: 1;
-            min-height: 150px;
-            max-height: 600px;
+            box-sizing: border-box;
+            height: 100%;
+            min-height: 0;
+            max-height: 100%;
+            overscroll-behavior: contain;
             flex: 1;
         }
 
@@ -478,7 +481,7 @@ export class SummaryView extends LitElement {
         const hasAnyContent = data.summary.length > 0 || data.topic.bullets.length > 0 || data.actions.length > 0;
 
         return html`
-            <div class="insights-container">
+            <div class="insights-container" tabindex="0" aria-label="Insights response">
                 <div class="text-size-toolbar"><response-font-controls></response-font-controls></div>
                 ${this.requestError ? html`<p role="alert" style="color:#fca5a5;font-size:12px">${this.requestError}</p>` : ''}
                 ${!hasAnyContent

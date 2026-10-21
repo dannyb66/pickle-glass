@@ -15,8 +15,11 @@ export class SttView extends LitElement {
             display: flex;
             flex-direction: column;
             gap: 8px;
-            min-height: 150px;
-            max-height: 600px;
+            box-sizing: border-box;
+            height: 100%;
+            min-height: 0;
+            max-height: 100%;
+            overscroll-behavior: contain;
             position: relative;
             z-index: 1;
             flex: 1;
@@ -209,7 +212,7 @@ export class SttView extends LitElement {
         }
 
         return html`
-            <div class="transcription-container">
+            <div class="transcription-container" tabindex="0" aria-label="Audio transcript">
                 ${this.sttMessages.length === 0
                     ? html`<div class="empty-state">Waiting for speech...</div>`
                     : this.sttMessages.map(msg => html`

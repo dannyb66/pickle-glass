@@ -10,15 +10,30 @@ class ShortcutsService {
         this.mouseEventsIgnored = false;
         this.windowPool = null;
         this.allWindowVisibility = true;
+        this.recentFeaturePanels = [];
     }
 
     initialize(windowPool) {
         this.windowPool = windowPool;
+        internalBridge.on('window:featurePanelActivated', ({ name }) => {
+            if (!['ask', 'listen'].includes(name)) return;
+            this.recentFeaturePanels = [name, ...this.recentFeaturePanels.filter(panel => panel !== name)];
+        });
         internalBridge.on('reregister-shortcuts', () => {
             console.log('[ShortcutsService] Reregistering shortcuts due to header state change.');
             this.registerShortcuts();
         });
         console.log('[ShortcutsService] Initialized with dependencies and event listener.');
+    }
+
+    scrollResponse(direction) {
+        const panels = ['ask', 'listen'].filter(name => {
+            const win = this.windowPool?.get(name);
+            return win && !win.isDestroyed() && win.isVisible() && !win.isMinimized?.();
+        });
+        const focused = panels.find(name => this.windowPool.get(name).isFocused?.());
+        const target = focused || this.recentFeaturePanels.find(name => panels.includes(name)) || panels[0];
+        if (target) this.windowPool.get(target).webContents.send(`scroll-response-${direction}`);
     }
 
     async openShortcutSettingsWindow () {
@@ -232,20 +247,10 @@ class ShortcutsService {
                     callback = () => askService.toggleAskButton(true);
                     break;
                 case 'scrollUp':
-                    callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-up');
-                        }
-                    };
+                    callback = () => this.scrollResponse('up');
                     break;
                 case 'scrollDown':
-                    callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-down');
-                        }
-                    };
+                    callback = () => this.scrollResponse('down');
                     break;
                 case 'moveUp':
                     callback = () => { if (header && header.isVisible()) internalBridge.emit('window:moveStep', { direction: 'up' }); };

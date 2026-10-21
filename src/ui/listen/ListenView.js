@@ -7,6 +7,7 @@ export class ListenView extends LitElement {
         :host {
             display: block;
             width: 400px;
+            height: 100vh;
             transform: translate3d(0, 0, 0);
             backface-visibility: hidden;
             transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.2s ease-out;
@@ -291,7 +292,11 @@ export class ListenView extends LitElement {
         .analysis-actions input { margin: 0; }
         .analyze-now { cursor: pointer; }
         .analyze-now:disabled { opacity: .5; cursor: default; }
-        .analysis-meta { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; font-size: 10px; line-height: 1.4; color: #cbd5e1; }
+        .analysis-meta { display: flex; flex-direction: column; gap: 3px; padding: 7px 12px; border-top: 1px solid rgba(255,255,255,.08); font-size: 10px; line-height: 1.3; color: #9da5af; }
+        .meta-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .top-bar, .insights-controls, .analysis-meta { flex-shrink: 0; }
+        summary-view, stt-view { flex: 1; min-height: 0; overflow: hidden; }
+        summary-view[hidden], stt-view[hidden] { display: none; }
         .analysis-error { color: #fca5a5; }
         .timer {
             font-family: 'Monaco', 'Menlo', monospace;
@@ -471,6 +476,10 @@ export class ListenView extends LitElement {
             this.startTimer();
         }
         if (window.api) {
+            this._scrollUp = () => this.scrollContent('up');
+            this._scrollDown = () => this.scrollContent('down');
+            window.api.insights.onScrollUp(this._scrollUp);
+            window.api.insights.onScrollDown(this._scrollDown);
             this._insightsStateListener = (event, state) => { this.analysisState = state; this.actionError = ''; };
             window.api.insights.onState(this._insightsStateListener);
             this._reloadInsights = async () => {
@@ -521,6 +530,8 @@ export class ListenView extends LitElement {
         this.ownerEpoch++;
         if (window.api) {
             window.api.insights.removeOnState(this._insightsStateListener);
+            window.api.insights.removeOnScrollUp(this._scrollUp);
+            window.api.insights.removeOnScrollDown(this._scrollDown);
             window.api.listenView.removeOnSessionStateChanged(this._sessionStateListener);
             window.api.interview.removeOnOwnerChanging(this._ownerChanging);
             window.api.common.removeOnUserStateChanged(this._reloadInsights);
@@ -569,9 +580,11 @@ export class ListenView extends LitElement {
 
                 const topBarHeight = topBar.offsetHeight;
 
-                const contentHeight = activeContent.scrollHeight;
+                const scroller = activeContent.shadowRoot?.querySelector('.insights-container, .transcription-container');
+                const contentHeight = Math.max(150, scroller?.scrollHeight || activeContent.scrollHeight);
 
-                const controlsHeight = this.shadowRoot.querySelector('.insights-controls')?.offsetHeight || 0;
+                const controlsHeight = (this.shadowRoot.querySelector('.insights-controls')?.offsetHeight || 0)
+                    + (this.shadowRoot.querySelector('.analysis-meta')?.offsetHeight || 0);
                 const idealHeight = topBarHeight + controlsHeight + contentHeight;
 
                 const targetHeight = Math.min(700, idealHeight);
@@ -585,6 +598,12 @@ export class ListenView extends LitElement {
             .catch(error => {
                 console.error('Error in adjustWindowHeight:', error);
             });
+    }
+
+    scrollContent(direction) {
+        const view = this.shadowRoot.querySelector(this.viewMode === 'transcript' ? 'stt-view' : 'summary-view');
+        const content = view?.shadowRoot?.querySelector('.insights-container, .transcription-container');
+        if (content) content.scrollTop += direction === 'up' ? -150 : 150;
     }
 
     async analyzeNow() {
@@ -750,23 +769,15 @@ export class ListenView extends LitElement {
                         <label><input type="checkbox" .checked=${state.autoEnabled} @change=${this.toggleAutomatic}> Auto-update</label>
                         <label><input type="checkbox" .checked=${state.screenEnabled !== false} ?disabled=${busy} @change=${this.toggleScreen}> Include screen</label>
                     </div>
-                    <div class="analysis-meta" role=${state.error || this.actionError ? 'alert' : 'status'} aria-live="polite">
-                        <span>${state.sessionId ? (state.isRecording ? 'Audio recording · Chat included' : 'Audio off · Chat and saved context') : 'Ask a question or analyze your screen. Audio is optional.'}</span>
-                        ${state.contextLabel ? html`<span class="context-label">${state.contextLabel}</span>` : ''}
-                        ${busy ? html`<span>${state.phase === 'queued' ? 'Queued' : state.progress || 'Analyzing'}</span>` : ''}
-                        ${state.lastUpdated ? html`<span>Updated ${new Date(state.lastUpdated).toLocaleTimeString()} · ${state.scope === 'entire' ? 'Entire session' : 'Recent'}: ${state.coveredTurns}/${state.totalTurns} items${state.condensed ? ' · condensed in parts' : ''}</span>` : ''}
-                        ${state.sources ? html`<span>Sources: ${state.sources.chat} chat messages · ${state.sources.audio} audio segments · ${state.sources.screen} recent screen snapshots${state.sources.chatScreens ? ` (${state.sources.chatScreens} from chat)` : ''}</span>` : ''}
-                        ${state.screenNote ? html`<span>${state.screenNote}</span>` : ''}
-                        ${state.error || this.actionError ? html`<span class="analysis-error">${this.actionError || state.error}</span>` : ''}
-                    </div>
+
                 </div>
 
-                <stt-view 
+                <stt-view ?hidden=${this.viewMode !== 'transcript'}
                     .isVisible=${this.viewMode === 'transcript'}
                     @stt-messages-updated=${this.handleSttMessagesUpdated}
                 ></stt-view>
 
-                <summary-view
+                <summary-view ?hidden=${this.viewMode !== 'insights'}
                     @insights-content-resized=${() => this.adjustWindowHeightThrottled()}
                     .sessionId=${state.sessionId}
                     .structuredData=${state.data || { summary: [], topic: { header: '', bullets: [] }, actions: [], followUps: [] }}
@@ -774,6 +785,12 @@ export class ListenView extends LitElement {
                     .isVisible=${this.viewMode === 'insights'}
                     .hasCompletedRecording=${this.hasCompletedRecording}
                 ></summary-view>
+                <div class="analysis-meta" role=${state.error || this.actionError ? 'alert' : 'status'} aria-live="polite">
+                    <span class="meta-line">${busy ? (state.phase === 'queued' ? 'Queued' : state.progress || 'Analyzing…') : (state.isRecording ? 'Audio on' : 'Audio off')}${state.lastUpdated ? ` · ${new Date(state.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${state.sources ? ` · Chat ${state.sources.chat} · Audio ${state.sources.audio} · Screens ${state.sources.screen}` : ''}</span>
+                    ${state.contextLabel ? html`<span class="meta-line" title=${state.contextLabel}>${state.contextLabel}${state.lastUpdated ? ` · ${state.coveredTurns}/${state.totalTurns}${state.condensed ? ' · condensed' : ''}` : ''}</span>` : ''}
+                    ${state.screenNote ? html`<span>${state.screenNote}</span>` : ''}
+                    ${state.error || this.actionError ? html`<span class="analysis-error">${this.actionError || state.error}</span>` : ''}
+                </div>
             </div>
         `;
     }

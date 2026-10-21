@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.8] - 2026-10-20
+
+### Fixed
+
+- Honor the latest header resize during animations so the settings dots stay inside the main bar after setup.
+- Move Insights source/status metadata below the response in a compact footer.
+- Keep Chat and Insights responses scrollable within their panels, route scroll shortcuts to the focused or last active visible panel, and preserve Chat reading position while an answer streams.
+
 ## [0.2.7] - 2026-10-20
 
 ### Added

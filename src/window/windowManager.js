@@ -103,6 +103,8 @@ const adjustWindowHeight = (winName, targetHeight) => {
 
 
 function setupWindowController(windowPool, layoutManager, movementManager) {
+    let headerResizeOriginalResizable;
+    let headerResizeGeneration = 0;
     internalBridge.on('window:requestVisibility', ({ name, visible }) => {
         handleWindowVisibilityRequest(windowPool, layoutManager, movementManager, name, visible);
     });
@@ -157,16 +159,21 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
 
     internalBridge.on('window:resizeHeaderWindow', ({ width, height }) => {
         const header = windowPool.get('header');
-        if (!header || movementManager.isAnimating) return;
+        if (!header || header.isDestroyed()) return;
 
         const newHeaderBounds = layoutManager.calculateHeaderResize(header, { width, height });
         
-        const wasResizable = header.isResizable();
-        if (!wasResizable) header.setResizable(true);
+        // The movement manager cancels this window's previous animation. Always
+        // accept the latest target, including setup → main during a resize.
+        const request = ++headerResizeGeneration;
+        if (headerResizeOriginalResizable === undefined) headerResizeOriginalResizable = header.isResizable();
+        if (!header.isResizable()) header.setResizable(true);
 
         movementManager.animateWindowBounds(header, newHeaderBounds, {
             onComplete: () => {
-                if (!wasResizable) header.setResizable(false);
+                if (request !== headerResizeGeneration || header.isDestroyed()) return;
+                header.setResizable(headerResizeOriginalResizable);
+                headerResizeOriginalResizable = undefined;
                 updateChildWindowLayouts(true);
             }
         });
@@ -487,6 +494,7 @@ function createFeatureWindows(header, namesToCreate) {
                     listen.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('listen', listen);
+                for (const event of ['show', 'focus']) listen.on(event, () => internalBridge.emit('window:featurePanelActivated', { name: 'listen' }));
                 break;
             }
 
@@ -520,6 +528,7 @@ function createFeatureWindows(header, namesToCreate) {
                     ask.webContents.openDevTools({ mode: 'detach' });
                 }
                 windowPool.set('ask', ask);
+                for (const event of ['show', 'focus']) ask.on(event, () => internalBridge.emit('window:featurePanelActivated', { name: 'ask' }));
                 break;
             }
 

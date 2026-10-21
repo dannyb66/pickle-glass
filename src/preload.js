@@ -172,10 +172,10 @@ contextBridge.exposeInMainWorld('api', {
     onShowTextInput: (callback) => ipcRenderer.on('ask:showTextInput', callback),
     removeOnShowTextInput: (callback) => ipcRenderer.removeListener('ask:showTextInput', callback),
     
-    onScrollResponseUp: (callback) => ipcRenderer.on('aks:scrollResponseUp', callback),
-    removeOnScrollResponseUp: (callback) => ipcRenderer.removeListener('aks:scrollResponseUp', callback),
-    onScrollResponseDown: (callback) => ipcRenderer.on('aks:scrollResponseDown', callback),
-    removeOnScrollResponseDown: (callback) => ipcRenderer.removeListener('aks:scrollResponseDown', callback)
+    onScrollResponseUp: (callback) => ipcRenderer.on('scroll-response-up', callback),
+    removeOnScrollResponseUp: (callback) => ipcRenderer.removeListener('scroll-response-up', callback),
+    onScrollResponseDown: (callback) => ipcRenderer.on('scroll-response-down', callback),
+    removeOnScrollResponseDown: (callback) => ipcRenderer.removeListener('scroll-response-down', callback)
   },
 
   // src/ui/listen/ListenView.js
@@ -187,6 +187,10 @@ contextBridge.exposeInMainWorld('api', {
     setVisible: visible => ipcRenderer.invoke('insights:setVisible', visible),
     onState: callback => ipcRenderer.on('insights:state', callback),
     removeOnState: callback => ipcRenderer.removeListener('insights:state', callback),
+    onScrollUp: callback => ipcRenderer.on('scroll-response-up', callback),
+    removeOnScrollUp: callback => ipcRenderer.removeListener('scroll-response-up', callback),
+    onScrollDown: callback => ipcRenderer.on('scroll-response-down', callback),
+    removeOnScrollDown: callback => ipcRenderer.removeListener('scroll-response-down', callback),
   },
 
   listenView: {

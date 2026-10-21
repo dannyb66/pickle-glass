@@ -76,6 +76,8 @@ Live Insights works with saved Ask questions and answers, optional audio transcr
 
 Clicking an insight opens Ask associated with that reviewed session. Closing Ask clears that review selection. Insights keeps at most five Ask screenshots and the latest manual capture per cached session, for at most three sessions, only in memory. Entire-session coverage applies to saved text; it does not recover earlier screenshots or continuously record the screen.
 
+Insights keeps source/status metadata in a compact footer below the response. Chat and Insights support wheel/trackpad scrolling; **Cmd+Shift+Up/Down** scrolls the focused panel, or the last active visible panel when another app has focus. Chat follows streamed output while you are at the bottom and keeps your place when you scroll up.
+
 Ask and Insights have **A− / A+** response-size controls, from 75–150%. Click the percentage to reset. The choice is remembered across response windows.
 
 ## Keyboard shortcuts
