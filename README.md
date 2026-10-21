@@ -27,6 +27,10 @@ open -a Glass
 
 This custom build disables upstream automatic updates so a downloaded release cannot replace your changes. Audio/screen features require the corresponding macOS permissions and a configured provider.
 
+If setup stays open after enabling Glass, use **Check again**, then **Restart Glass**. If it still reports **Screen recording: denied**, remove the old Glass entry in **System Settings → Privacy & Security → Screen & System Audio Recording**, add `/Applications/Glass.app`, enable it, and quit/reopen Glass. Microphone access has a separate permission pane. Setup advances once macOS reports the required access as granted.
+
+Local builds use ad-hoc signing by default. Rebuilding changes their signing identity and can require granting screen access again. If you already have a signing identity, build with `GLASS_SIGNING_IDENTITY="Your signing identity" npm run install:mac` to use it; the installer does not create certificates or change Keychain trust.
+
 For development:
 
 ```sh

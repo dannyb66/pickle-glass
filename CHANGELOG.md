@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.6] - 2026-10-20
+
+### Fixed
+
+- Show the actual macOS permission blocker, recheck after returning from Settings, and offer Check again and Restart Glass with visible recovery errors.
+- Open Screen & System Audio Recording settings correctly and guide recovery when a rebuilt local app has an outdated permission entry.
+- Unregister generated app copies during installation; support an existing signing identity through `GLASS_SIGNING_IDENTITY`.
+
 ## [0.2.5] - 2026-10-20
 
 ### Added

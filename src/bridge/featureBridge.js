@@ -61,6 +61,7 @@ module.exports = {
     ipcMain.handle('shortcut:toggleAllWindowsVisibility', async () => await shortcutsService.toggleAllWindowsVisibility());
 
     // Permissions
+    interviewHandler('permission:restart', () => permissionService.restartApplication());
     ipcMain.handle('check-system-permissions', async () => await permissionService.checkSystemPermissions());
     ipcMain.handle('request-microphone-permission', async () => await permissionService.requestMicrophonePermission());
     ipcMain.handle('open-system-preferences', async (event, section) => await permissionService.openSystemPreferences(section));

@@ -56,7 +56,7 @@ class HeaderTransitionManager {
                         console.log('[HeaderController] Re-initializing model state after permission grant...');
                         await window.api.headerController.reInitializeModelState();
                     }
-                    this.transitionToMainHeader();
+                    await this.transitionToMainHeader();
                 };
                 this.headerContainer.appendChild(this.permissionHeader);
             } else {
@@ -201,12 +201,12 @@ class HeaderTransitionManager {
             }
         }
 
-        let initialHeight = 220;
+        let initialHeight = 440;
         if (window.api) {
             try {
                 const userState = await window.api.common.getCurrentUser();
                 if (userState.mode === 'firebase') {
-                    initialHeight = 280;
+                    initialHeight = 490;
                 }
             } catch (e) {
                 console.error('Could not get user state for resize', e);
@@ -240,8 +240,8 @@ class HeaderTransitionManager {
 
     async _resizeForPermissionHeader(height) {
         if (!window.api) return;
-        const finalHeight = height || 220;
-        return window.api.headerController.resizeHeaderWindow({ width: 285, height: finalHeight })
+        const finalHeight = height || 440;
+        return window.api.headerController.resizeHeaderWindow({ width: 320, height: finalHeight })
             .catch(() => {});
     }
 

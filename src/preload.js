@@ -134,6 +134,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // src/ui/app/PermissionHeader.js
   permissionHeader: {
+    restartApplication: () => ipcRenderer.invoke('permission:restart'),
     // Permission Management
     checkSystemPermissions: () => ipcRenderer.invoke('check-system-permissions'),
     requestMicrophonePermission: () => ipcRenderer.invoke('request-microphone-permission'),

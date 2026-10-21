@@ -1,4 +1,4 @@
-const { systemPreferences, shell, desktopCapturer } = require('electron');
+const { app, systemPreferences, shell, desktopCapturer } = require('electron');
 const permissionRepository = require('../repositories/permission');
 
 class PermissionService {
@@ -32,6 +32,7 @@ class PermissionService {
     } catch (error) {
       console.error('[Permissions] Error checking permissions:', error);
       return {
+        success: false,
         microphone: 'unknown',
         screen: 'unknown',
         keychain: 'unknown',
@@ -51,6 +52,10 @@ class PermissionService {
       console.log('[Permissions] Microphone status:', status);
       if (status === 'granted') {
         return { success: true, status: 'granted' };
+      }
+      if (status === 'denied' || status === 'restricted') {
+        await this.openSystemPreferences('microphone');
+        return { success: false, status, settingsOpened: true };
       }
 
       const granted = await systemPreferences.askForMediaAccess('microphone');
@@ -73,6 +78,12 @@ class PermissionService {
     }
 
     try {
+      const panes = {
+        'screen-recording': 'Privacy_ScreenCapture',
+        microphone: 'Privacy_Microphone',
+      };
+      if (!panes[section]) return { success: false, error: 'Unsupported permission setting.' };
+      await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${panes[section]}`);
       if (section === 'screen-recording') {
         try {
           console.log('[Permissions] Triggering screen capture request to register app...');
@@ -84,13 +95,27 @@ class PermissionService {
         } catch (captureError) {
           console.log('[Permissions] Screen capture request triggered (expected to fail):', captureError.message);
         }
-        
-        // await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+
       }
       return { success: true };
     } catch (error) {
       console.error('[Permissions] Error opening system preferences:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  restartApplication() {
+    // Restart the same app, without carrying over temporary inspector arguments.
+    const args = process.argv.slice(1).filter(arg => !/^--(?:remote-debugging-port|inspect(?:-brk|-port)?|devtools)(?:=|$)/.test(arg));
+    if (this._restartRequested) return { success: true };
+    this._restartRequested = true;
+    try {
+      app.relaunch({ args });
+      setImmediate(() => app.quit());
+      return { success: true };
+    } catch (error) {
+      this._restartRequested = false;
+      throw error;
     }
   }
 
@@ -121,4 +146,4 @@ class PermissionService {
 }
 
 const permissionService = new PermissionService();
-module.exports = permissionService; 
+module.exports = permissionService;
