@@ -29,6 +29,15 @@ This custom build disables upstream automatic updates so a downloaded release ca
 
 If setup stays open after enabling Glass, use **Check again**, then **Restart Glass**. If it still reports **Screen recording: denied**, remove the old Glass entry in **System Settings → Privacy & Security → Screen & System Audio Recording**, add `/Applications/Glass.app`, enable it, and quit/reopen Glass. Microphone access has a separate permission pane. Setup advances once macOS reports the required access as granted.
 
+If the switch remains enabled but Glass still reports denied after those steps, quit Glass and reset only its screen permission before granting it again:
+
+```sh
+tccutil reset ScreenCapture com.pickle.glass
+open -a /Applications/Glass.app
+```
+
+Use **Open screen recording settings** in Glass, enable the new entry, then **Restart Glass**. This resets Glass’s screen permission only; it does not delete profiles or session history.
+
 Local builds use ad-hoc signing by default. Rebuilding changes their code signature and can require granting screen access again. If you already have a signing identity, build with `GLASS_SIGNING_IDENTITY="Your signing identity" npm run install:mac` to use it; the installer does not create certificates or change Keychain trust.
 
 For development:
