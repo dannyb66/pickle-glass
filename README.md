@@ -1,29 +1,34 @@
 # Glass: saved interview context, audio and screen assistance
 
-Glass is a local Electron app for asking questions with a reviewed resume, job description, technical references, conversation transcripts and requested screenshots. This fork adds saved interview profiles, manual Live Insights, keyboard controls and an installable Mac app.
+Glass is a local Electron app for asking questions with a reviewed resume, job description, technical references, conversation transcripts and requested screenshots. This fork adds saved interview profiles, Live Insights from chat, optional audio and screen context, keyboard controls and an installable Mac app. The current release is **0.2.8**; see the [changelog](CHANGELOG.md) for release details.
 
 ## Open the Mac app
 
 Once installed, open **Glass** from Spotlight or Finder → Applications, or run:
 
 ```sh
-open -a Glass
+open -a /Applications/Glass.app
 ```
 
 The app starts without developer tools. **Settings → Interview Context** opens the personalization website in your browser. Its usual address is [localhost:64980](http://localhost:64980/personalize?tab=interview). If that port is busy, Glass chooses another one; the Settings link always opens the current address. Keep Glass running while using the website. Older tabs from a previous dynamic-port build should be reopened through Settings once.
 
 ## Build and install locally
 
-The local installer targets Apple Silicon Macs. Use Node.js 20, Python and Xcode command-line tools for native dependencies.
+The local installer targets Apple Silicon Macs. Use Node.js 20, Python and Xcode command-line tools for native dependencies. Run these commands from the repository root for the first installation:
 
 ```sh
 npm install
 npm --prefix pickleglass_web install
-npm run install:mac
-open -a Glass
+npm run install:mac && open -a /Applications/Glass.app
 ```
 
-`install:mac` builds the desktop renderer and website, prepares self-contained dependencies, packages and locally signs the app, then installs `/Applications/Glass.app`. Close Glass before reinstalling. Re-run the command after code changes. A replaced app is retained under `dist/Glass-previous-*.app`; saved profiles, settings and history remain in `~/Library/Application Support/Glass`.
+After code changes, quit Glass, then rebuild, install and open the updated app from the repository root:
+
+```sh
+npm run install:mac && open -a /Applications/Glass.app
+```
+
+`install:mac` builds the desktop renderer and website, prepares self-contained dependencies, packages and locally signs the app, then installs `/Applications/Glass.app`. The app opens only after installation succeeds. Run the dependency installation commands again when dependencies change. A replaced app is retained under `dist/Glass-previous-*.app`; saved profiles, settings and history remain in `~/Library/Application Support/Glass`.
 
 This custom build disables upstream automatic updates so a downloaded release cannot replace your changes. Audio/screen features require the corresponding macOS permissions and a configured provider.
 
@@ -38,7 +43,9 @@ open -a /Applications/Glass.app
 
 Use **Open screen recording settings** in Glass, enable the new entry, then **Restart Glass**. This resets Glass’s screen permission only; it does not delete profiles or session history.
 
-Local builds use ad-hoc signing by default. Rebuilding changes their code signature and can require granting screen access again. If you already have a signing identity, build with `GLASS_SIGNING_IDENTITY="Your signing identity" npm run install:mac` to use it; the installer does not create certificates or change Keychain trust.
+If microphone permission also stays stale after enabling it and restarting, quit Glass, run `tccutil reset Microphone com.pickle.glass`, then reopen `/Applications/Glass.app` and allow microphone access when prompted. Reset only the permission that is blocked.
+
+Local builds use ad-hoc signing by default. Rebuilding changes their code signature and can require granting screen or microphone access again. If you already have a signing identity, build with `GLASS_SIGNING_IDENTITY="Your signing identity" npm run install:mac` to use it; the installer does not create certificates or change Keychain trust.
 
 For development:
 
