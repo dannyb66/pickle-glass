@@ -723,6 +723,7 @@ export class AskView extends LitElement {
         this.contextLabel = '';
         this.isLoading = false;
         this.copyState = 'idle';
+        this.lineCopyTimeouts = {};
         this.showTextInput = true;
         this.headerText = 'AI Response';
         this.headerAnimating = false;
@@ -759,6 +760,8 @@ export class AskView extends LitElement {
         console.log('📱 AskView connectedCallback - IPC 이벤트 리스너 설정');
 
         document.addEventListener('keydown', this.handleEscKey);
+        this.handleWindowFocus = () => this.focusTextInput();
+        window.addEventListener('focus', this.handleWindowFocus);
 
         this.resizeObserver = new ResizeObserver(entries => {
             for (const entry of entries) {
@@ -780,38 +783,29 @@ export class AskView extends LitElement {
         };
 
         if (window.api) {
-            window.api.askView.onShowTextInput(() => {
-                console.log('Show text input signal received');
-                if (!this.showTextInput) {
-                    this.showTextInput = true;
-                    this.updateComplete.then(() => this.focusTextInput());
-                  } else {
+            this.handleShowTextInput = (_event, options = {}) => {
+                this.showTextInput = true;
+                this.updateComplete.then(() => {
+                    if (options.submit) this.handleSendText();
                     this.focusTextInput();
-                  }
-            });
+                });
+            };
+            window.api.askView.onShowTextInput(this.handleShowTextInput);
 
             this._scrollUp = () => this.handleScroll('up');
             this._scrollDown = () => this.handleScroll('down');
             window.api.askView.onScrollResponseUp(this._scrollUp);
             window.api.askView.onScrollResponseDown(this._scrollDown);
-            window.api.askView.onAskStateUpdate((event, newState) => {
+            this.handleAskStateUpdate = (event, newState) => {
                 this.currentResponse = newState.currentResponse;
                 this.currentQuestion = newState.currentQuestion;
                 this.contextLabel = newState.contextLabel || '';
                 this.isLoading       = newState.isLoading;
                 this.isStreaming     = newState.isStreaming;
               
-                const wasHidden = !this.showTextInput;
-                this.showTextInput = newState.showTextInput;
-              
-                if (newState.showTextInput) {
-                  if (wasHidden) {
-                    this.updateComplete.then(() => this.focusTextInput());
-                  } else {
-                    this.focusTextInput();
-                  }
-                }
-              });
+                this.showTextInput = true;
+            };
+            window.api.askView.onAskStateUpdate(this.handleAskStateUpdate);
             console.log('AskView: IPC 이벤트 리스너 등록 완료');
         }
     }
@@ -823,6 +817,7 @@ export class AskView extends LitElement {
         console.log('📱 AskView disconnectedCallback - IPC 이벤트 리스너 제거');
 
         document.removeEventListener('keydown', this.handleEscKey);
+        window.removeEventListener('focus', this.handleWindowFocus);
 
         if (this.copyTimeout) {
             clearTimeout(this.copyTimeout);
@@ -942,7 +937,7 @@ export class AskView extends LitElement {
         requestAnimationFrame(() => {
             const textInput = this.shadowRoot?.getElementById('textInput');
             if (textInput) {
-                textInput.focus();
+                textInput.focus({ preventScroll: true });
             }
         });
     }
@@ -1284,7 +1279,8 @@ export class AskView extends LitElement {
         const text = (overridingText || textInput?.value || '').trim();
         // if (!text) return;
 
-        textInput.value = '';
+        if (textInput) textInput.value = '';
+        this.focusTextInput();
 
         if (window.api) {
             window.api.askView.sendMessage(text).catch(error => {
@@ -1326,6 +1322,7 @@ export class AskView extends LitElement {
     }
 
     firstUpdated() {
+        this.focusTextInput();
         setTimeout(() => this.adjustWindowHeight(), 200);
     }
 
@@ -1393,7 +1390,7 @@ export class AskView extends LitElement {
                 </div>
 
                 <!-- Text Input Container -->
-                <div class="text-input-container ${!hasResponse ? 'no-response' : ''} ${!this.showTextInput ? 'hidden' : ''}">
+                <div class="text-input-container ${!hasResponse ? 'no-response' : ''}">
                     <input
                         type="text"
                         id="textInput"

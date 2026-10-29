@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.9] - 2026-10-23
+
+### Fixed
+
+- Bound Chat and Insights to the actual window height so long responses scroll instead of extending below the screen.
+- Keep the Ask input visible during loading and streaming, preserve unsent drafts, and restore typing focus when returning to Ask.
+- Make Ask and Cmd+Enter activate Glass on macOS; Cmd+Enter in focused Ask submits the actual draft.
+- Prevent a cancelled older question from resetting a newer request.
+
 ## [0.2.8] - 2026-10-20
 
 ### Fixed

@@ -1,6 +1,6 @@
 # Glass: saved interview context, audio and screen assistance
 
-Glass is a local Electron app for asking questions with a reviewed resume, job description, technical references, conversation transcripts and requested screenshots. This fork adds saved interview profiles, Live Insights from chat, optional audio and screen context, keyboard controls and an installable Mac app. The current release is **0.2.8**; see the [changelog](CHANGELOG.md) for release details.
+Glass is a local Electron app for asking questions with a reviewed resume, job description, technical references, conversation transcripts and requested screenshots. This fork adds saved interview profiles, Live Insights from chat, optional audio and screen context, keyboard controls and an installable Mac app. The current release is **0.2.9**; see the [changelog](CHANGELOG.md) for release details.
 
 ## Open the Mac app
 
@@ -85,6 +85,8 @@ Clicking an insight opens Ask associated with that reviewed session. Closing Ask
 
 Insights keeps source/status metadata in a compact footer below the response. Chat and Insights support wheel/trackpad scrolling; **Cmd+Shift+Up/Down** scrolls the focused panel, or the last active visible panel when another app has focus. Chat follows streamed output while you are at the bottom and keeps your place when you scroll up.
 
+The Ask input stays visible while answers load and stream. Click **Ask** or press **Cmd+Enter** from another window to focus it; press **Cmd+Enter** again in Ask to submit your draft. An empty submission asks about the current context. Returning to Ask restores typing focus and keeps any unsent draft.
+
 Ask and Insights have **A− / A+** response-size controls, from 75–150%. Click the percentage to reset. The choice is remembered across response windows.
 
 ## Keyboard shortcuts
@@ -93,7 +95,7 @@ All bindings can be changed or disabled in **Settings → Shortcuts**. Use Ctrl 
 
 | Action | Default on Mac |
 | --- | --- |
-| Ask / focus a follow-up / submit a screen-only follow-up | Cmd+Enter |
+| Open / focus Ask; submit draft when Ask is focused | Cmd+Enter |
 | Listen / Stop / Done | Cmd+Shift+L |
 | Open Insights / analyze entire session | Cmd+Shift+I |
 | Show / hide Glass | Cmd+Backslash |
@@ -117,8 +119,11 @@ Use Electron's Node runtime so SQLite and other native modules use the matching 
 ```sh
 ELECTRON_RUN_AS_NODE=1 node_modules/.bin/electron --test tests/*.test.cjs
 npm run build:renderer
+node_modules/.bin/electron tests/panel-interaction.electron.cjs
 npm run build:web
 ```
+
+The native panel check loads the production HTML and renderer with synthetic provider APIs. It checks wheel and shortcut scrolling, streaming updates, window resizing, input focus, draft submission and switching between windows without accessing saved profiles or starting recording.
 
 Regression coverage includes selected-profile activation through real session adapters and outgoing model requests, immutable snapshots, owner isolation, website origin checks, start without speech, stable website ports, same-origin API requests, Gemini context, shortcuts, chat/audio/screen Insights, bounded screenshot retention and durable transcript writes.
 

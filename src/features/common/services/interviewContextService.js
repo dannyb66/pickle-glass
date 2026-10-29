@@ -15,12 +15,15 @@ function validate(input) {
     if (input.resume?.confirmed !== true || input.resume?.confirmedHash !== hash(resumeText)) throw new Error('Review the chosen resume and confirm this exact text before saving.');
     const references = input.references || [];
     if (!Array.isArray(references) || references.length > LIMITS.references) throw new Error(`Use at most ${LIMITS.references} references.`);
-    return { id: input.id || randomUUID(), revision: Number.isInteger(input.revision) ? input.revision : 0,
-        name: field(input.name, 'Profile name', 120, true), company: field(input.company, 'Company'), role: field(input.role, 'Role', 200, true),
-        round: 'system_design', level: field(input.level, 'Level', 120), minutes: Math.max(10, Math.min(180, Number(input.minutes) || 45)),
+    const mode = input.mode === 'cv_only' ? 'cv_only' : 'interview';
+    const cvOnly = mode === 'cv_only';
+    return { id: input.id || randomUUID(), revision: Number.isInteger(input.revision) ? input.revision : 0, mode,
+        name: field(input.name, 'Profile name', 120, true), company: field(input.company, 'Company'), role: field(input.role, 'Role', 200, !cvOnly),
+        round: cvOnly ? '' : 'system_design', level: cvOnly ? '' : field(input.level, 'Level', 120), minutes: cvOnly ? null : Math.max(10, Math.min(180, Number(input.minutes) || 45)),
         resume: { name: field(input.resume.name, 'Resume name', 180, true), text: resumeText, confirmed: true, confirmedHash: hash(resumeText) },
-        jd: { text: field(input.jd?.text, 'Job description', LIMITS.input, true), url: field(input.jd?.url, 'JD URL', 2000) },
-        references: references.map(ref => ({ name: field(ref.name, 'Reference name', 180, true), text: field(ref.text, 'Reference text', LIMITS.input, true) })) };
+        additionalContext: cvOnly ? field(input.additionalContext, 'Additional context', LIMITS.input) : '',
+        jd: { text: cvOnly ? '' : field(input.jd?.text, 'Job description', LIMITS.input, true), url: cvOnly ? '' : field(input.jd?.url, 'JD URL', 2000) },
+        references: cvOnly ? [] : references.map(ref => ({ name: field(ref.name, 'Reference name', 180, true), text: field(ref.text, 'Reference text', LIMITS.input, true) })) };
 }
 class InterviewContextService extends EventEmitter {
     constructor({ getDb, getUid } = {}) {

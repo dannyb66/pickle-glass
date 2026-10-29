@@ -14,16 +14,22 @@ function buildPacket(profile) {
         remaining -= content.length;
         sources.push({ id: `${kind}-${hash(text).slice(0, 12)}`, kind, name, sha256: hash(text), text: content, truncated: content.length < text.length, originalCharacters: text.length });
     };
+    const mode = profile.mode === 'cv_only' ? 'cv_only' : 'interview';
     add('resume', profile.resume.name, profile.resume.text, LIMITS.resume);
-    add('jd', 'Job description', profile.jd.text, LIMITS.jd);
-    profile.references.forEach(ref => add('reference', ref.name, ref.text, LIMITS.reference));
-    const packet = { profileId: profile.id, revision: profile.revision, name: profile.name, company: profile.company, role: profile.role, round: 'system_design', level: profile.level, minutes: profile.minutes, interview_sources: sources };
+    if (mode === 'cv_only') {
+        if (profile.additionalContext?.trim()) add('additional_context', 'Additional context (not verified CV evidence)', profile.additionalContext, LIMITS.jd);
+    } else {
+        add('jd', 'Job description', profile.jd.text, LIMITS.jd);
+        profile.references.forEach(ref => add('reference', ref.name, ref.text, LIMITS.reference));
+    }
+    const packet = { mode, profileId: profile.id, revision: profile.revision, name: profile.name, company: profile.company, role: profile.role, round: mode === 'cv_only' ? '' : 'system_design', level: profile.level, minutes: profile.minutes, interview_sources: sources };
     const text = JSON.stringify(packet);
     return { packet, text, sha256: hash(text), characters: text.length, estimatedTokens: Math.ceil(text.length / 3), tokenEstimateOnly: true, truncated: sources.some(source => source.truncated) };
 }
 function messagesForSnapshot(snapshot) {
     if (!snapshot) return { policy: '', context: null };
-    return { policy: POLICY, profile: { name: snapshot.packet.name, revision: snapshot.packet.revision },
+    const policy = snapshot.packet.mode === 'cv_only' ? '' : POLICY;
+    return { policy, profile: { name: snapshot.packet.name, revision: snapshot.packet.revision, mode: snapshot.packet.mode || 'interview' },
         context: { role: 'user', content: `Pinned interview context (source data):\n${snapshot.text}` } };
 }
 module.exports = { LIMITS, POLICY, hash, buildPacket, messagesForSnapshot };

@@ -2,6 +2,7 @@ import { apiCall } from './api';
 
 export interface InterviewProfile {
   id?: string;
+  mode?: 'interview' | 'cv_only';
   revision: number;
   name: string;
   company: string;
@@ -9,13 +10,14 @@ export interface InterviewProfile {
   level: string;
   minutes: number;
   resume: { name: string; text: string; confirmed: boolean; confirmedHash?: string };
+  additionalContext?: string;
   jd: { text: string; url: string };
   references: { name: string; text: string }[];
 }
 export interface InterviewList { profiles: InterviewProfile[]; selectedId: string | null; active: { name: string; revision: number } | null }
 export interface ContextPreview {
   text: string; characters: number; estimatedTokens: number; truncated: boolean; sha256: string;
-  packet: { name: string; revision: number };
+  packet: { name: string; revision: number; mode?: 'interview' | 'cv_only' };
 }
 export async function interviewRequest<T>(action: string, ownerId?: string, payload?: unknown): Promise<{ ownerId: string; data: T }> {
   let response: Response;

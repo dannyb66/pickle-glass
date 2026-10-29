@@ -1,4 +1,4 @@
-const { BrowserWindow } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const { createStreamingLLM } = require('../common/ai/factory');
 // Lazy require helper to avoid circular dependency issues
 const getWindowManager = () => require('../../window/windowManager');
@@ -154,35 +154,18 @@ class AskService {
 
     async toggleAskButton(inputScreenOnly = false) {
         const askWindow = getWindowPool()?.get('ask');
-
-        let shouldSendScreenOnly = false;
-        if (inputScreenOnly && this.state.showTextInput && askWindow && askWindow.isVisible()) {
-            shouldSendScreenOnly = true;
-            await this.sendMessage('', []);
-            return;
-        }
-
-        const hasContent = this.state.isLoading || this.state.isStreaming || (this.state.currentResponse && this.state.currentResponse.length > 0);
-
-        if (askWindow && askWindow.isVisible() && hasContent) {
-            this.state.showTextInput = !this.state.showTextInput;
-            // DOM focus alone cannot receive typing while another window is active.
-            if (this.state.showTextInput) askWindow.focus();
-            this._broadcastState();
-        } else {
-            if (askWindow && askWindow.isVisible()) {
-                internalBridge.emit('window:requestVisibility', { name: 'ask', visible: false });
-                this.state.isVisible = false;
-            } else {
-                console.log('[AskService] Showing hidden Ask window');
-                internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
-                this.state.isVisible = true;
-            }
-            if (this.state.isVisible) {
-                this.state.showTextInput = true;
-                this._broadcastState();
-            }
-        }
+        if (!askWindow || askWindow.isDestroyed()) return;
+        // Returning from another app focuses the composer. A second Cmd+Enter
+        // submits its actual draft through the renderer, never an empty replacement.
+        const submit = inputScreenOnly && askWindow.isVisible() && !!askWindow.isFocused?.();
+        internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
+        this.state.isVisible = true;
+        this.state.showTextInput = true;
+        if (process.platform === 'darwin') app.focus({ steal: true });
+        askWindow.focus();
+        askWindow.webContents.focus();
+        this._broadcastState();
+        askWindow.webContents.send('ask:showTextInput', { submit });
     }
 
     clearReviewContext() {
@@ -250,7 +233,7 @@ class AskService {
             currentQuestion: userPrompt,
             currentResponse: '',
             contextLabel: '',
-            showTextInput: false,
+            showTextInput: true,
         };
         this._broadcastState();
 
@@ -274,6 +257,7 @@ class AskService {
             } else {
                 sessionId = await sessionRepository.getOrCreateActive('ask');
             }
+            if (signal.aborted) throw new Error('Request cancelled.');
             this.requestSessionId = sessionId;
             const interview = interviewContext.context(sessionId);
             this.state.contextLabel = interview.profile ? `Interview: ${interview.profile.name} · v${interview.profile.revision}` : 'Generic mode';
@@ -393,6 +377,8 @@ class AskService {
             }
 
         } catch (error) {
+            // A superseded request must not reset the newer question or its stream.
+            if (signal.aborted) return { success: false, error: 'Request cancelled.' };
             console.error('[AskService] Error during message processing:', error);
             this.state = {
                 ...this.state,

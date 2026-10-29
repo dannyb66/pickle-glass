@@ -8,18 +8,20 @@ const { EventEmitter } = require('node:events');
 function harness(transcripts = [], chunks = [], interview = null, failImage = false, controls = {}) {
     const bridge = new EventEmitter();
     controls.bridge = bridge;
-    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, states: [], screens: [] };
+    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, appFocuses: 0, webFocuses: 0, states: [], screens: [], composerRequests: [] };
     const window = {
         isDestroyed: () => false,
         isVisible: () => true,
+        isFocused: () => !!controls.focused,
         focus() { calls.focuses++; },
-        webContents: { send(channel, state) {
+        webContents: { focus() { calls.webFocuses++; }, send(channel, state) {
             if (channel === 'ask:stateUpdate') calls.states.push({ ...state });
+            if (channel === 'ask:showTextInput') calls.composerRequests.push({ ...state });
         } },
     };
     const mocks = {
         '../common/services/interviewContextService': { on(event, callback) { if (event === 'invalidated') controls.invalidate = callback; }, context: () => interview || ({ context: null }), snapshot: () => null },
-        electron: { BrowserWindow: {}, desktopCapturer: { getSources: async () => failImage ? [{ thumbnail: { toJPEG: () => Buffer.from('synthetic-image'), getSize: () => ({ width: 10, height: 10 }) } }] : [] } },
+        electron: { app: { focus: () => calls.appFocuses++ }, BrowserWindow: {}, desktopCapturer: { getSources: async () => failImage ? [{ thumbnail: { toJPEG: () => Buffer.from('synthetic-image'), getSize: () => ({ width: 10, height: 10 }) } }] : [] } },
         '../common/ai/factory': { createStreamingLLM: () => ({ streamChat: async messages => {
             calls.prompts.push(messages);
             if (failImage && calls.prompts.length === 1) throw new Error('image unsupported');
@@ -30,7 +32,7 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
         '../../window/windowManager': { windowPool: new Map([['ask', window]]) },
         '../../bridge/internalBridge': bridge,
         '../common/repositories/session': {
-            getOrCreateActive: async () => { calls.activeSessionRequests++; return 'active-listen-session'; },
+            getOrCreateActive: async () => { calls.activeSessionRequests++; return controls.activeSession ? controls.activeSession() : 'active-listen-session'; },
             getById: async id => ({ id, uid: controls.sessionOwner || 'owner-a', ended_at: 123 }),
         },
         '../common/services/insightsScreenContext': { remember: (...args) => calls.screens.push(args) },
@@ -46,7 +48,7 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
     };
     const module = { exports: {} };
     const sandbox = { module, exports: module.exports, Buffer, TextDecoder, AbortController,
-        process: { platform: 'linux' }, console: { log() {}, warn() {}, error() {} },
+        process: { platform: controls.platform || 'linux' }, console: { log() {}, warn() {}, error() {} },
         require(name) {
             if (name in mocks) return mocks[name];
             if (name === 'sharp') throw new Error('not used');
@@ -72,7 +74,7 @@ test('Cmd+Enter activates the Ask window when revealing follow-up input', async 
     }
 });
 
-test('Ask button activates revealed follow-up input but does not refocus when hiding it', async () => {
+test('Ask button always focuses the composer and never hides it', async () => {
     const { service, calls } = harness();
     Object.assign(service.state, { currentResponse: 'Previous answer', showTextInput: false });
 
@@ -80,22 +82,64 @@ test('Ask button activates revealed follow-up input but does not refocus when hi
     assert.equal(calls.focuses, 1);
 
     await service.toggleAskButton();
-    assert.equal(service.state.showTextInput, false);
-    assert.equal(calls.focuses, 1);
+    assert.equal(service.state.showTextInput, true);
+    assert.equal(calls.focuses, 2);
+    assert.ok(calls.composerRequests.every(request => request.submit === false));
 });
 
-test('Cmd+Enter preserves screen-only submission when the input is already visible', async () => {
+test('Cmd+Enter returning from another app focuses without submitting an empty replacement', async () => {
     const { service, calls } = harness();
     const submissions = [];
     service.sendMessage = async (...args) => submissions.push(args);
 
     await service.toggleAskButton(true);
 
-    assert.equal(submissions.length, 1);
-    assert.equal(submissions[0][0], '');
-    assert.equal(Array.isArray(submissions[0][1]), true);
-    assert.equal(submissions[0][1].length, 0);
-    assert.equal(calls.focuses, 0);
+    assert.equal(submissions.length, 0);
+    assert.equal(calls.composerRequests.at(-1).submit, false);
+    assert.equal(calls.focuses, 1);
+});
+
+test('Cmd+Enter in focused Ask asks the renderer to submit its draft', async () => {
+    const { service, calls } = harness([], [], null, false, { focused: true });
+    await service.toggleAskButton(true);
+    assert.equal(calls.composerRequests.at(-1).submit, true);
+    assert.equal(calls.prompts.length, 0, 'only the renderer knows the unsent input');
+});
+
+test('explicit Ask activation also activates the Mac app and its web contents', async () => {
+    const { service, calls } = harness([], [], null, false, { platform: 'darwin' });
+    await service.toggleAskButton(true);
+    assert.equal(calls.appFocuses, 1);
+    assert.equal(calls.focuses, 1);
+    assert.equal(calls.webFocuses, 1);
+});
+
+test('Ask composer remains available throughout loading, streaming and completion', async () => {
+    const chunks = [Buffer.from('data: {"choices":[{"delta":{"content":"Synthetic answer"}}]}\n')];
+    const { service, calls } = harness([], chunks);
+    await service.sendMessage('A question while another answer is visible');
+    assert.ok(calls.states.some(state => state.isLoading));
+    assert.ok(calls.states.some(state => state.isStreaming));
+    assert.ok(calls.states.every(state => state.showTextInput));
+    assert.equal(service.state.showTextInput, true);
+});
+
+test('an older cancelled question cannot reset the state of a newer question', async () => {
+    let release, releaseNew;
+    const pendingSession = new Promise(resolve => { release = resolve; });
+    const pendingNewSession = new Promise(resolve => { releaseNew = resolve; });
+    let requests = 0;
+    const controls = { activeSession: () => ++requests === 1 ? pendingSession : pendingNewSession };
+    const { service } = harness([], [], null, false, controls);
+    const oldQuestion = service.sendMessage('Old question');
+    const newQuestion = service.sendMessage('New question');
+    const stateAfterNewQuestion = JSON.stringify(service.state);
+    release('active-listen-session');
+    await oldQuestion;
+    assert.equal(JSON.stringify(service.state), stateAfterNewQuestion);
+    assert.equal(service.state.currentQuestion, 'New question');
+    releaseNew('active-listen-session');
+    await newQuestion;
 });
 
 test('ordinary Ask includes real stored transcripts from the active session in its model request', async () => {
