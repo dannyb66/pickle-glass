@@ -6,9 +6,12 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 
 function harness(transcripts = [], chunks = [], interview = null, failImage = false, controls = {}) {
+    const options = interview && ['captureFailure', 'providerError', 'onRequest', 'streamError'].some(key => key in interview) ? interview : {};
+    if (options === interview) interview = null;
     const bridge = new EventEmitter();
     controls.bridge = bridge;
-    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, appFocuses: 0, webFocuses: 0, states: [], screens: [], composerRequests: [] };
+    const calls = { activeSessionRequests: 0, sessions: [], prompts: [], focuses: 0, appFocuses: 0, webFocuses: 0, states: [], screens: [], composerRequests: [], captures: 0, displayIds: [], feed: [] };
+    const image = { getSize: () => ({ width: 1920, height: 1080 }), resize() { return this; }, toJPEG: () => Buffer.from('synthetic image') };
     const window = {
         isDestroyed: () => false,
         isVisible: () => true,
@@ -21,13 +24,24 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
     };
     const mocks = {
         '../common/services/interviewContextService': { on(event, callback) { if (event === 'invalidated') controls.invalidate = callback; }, context: () => interview || ({ context: null }), snapshot: () => null },
-        electron: { app: { focus: () => calls.appFocuses++ }, BrowserWindow: {}, desktopCapturer: { getSources: async () => failImage ? [{ thumbnail: { toJPEG: () => Buffer.from('synthetic-image'), getSize: () => ({ width: 10, height: 10 }) } }] : [] } },
+        electron: { app: { focus: () => calls.appFocuses++ }, BrowserWindow: {},
+            screen: { getCursorScreenPoint: () => ({x: 0, y: 0}), getDisplayNearestPoint: () => ({id: 7}) },
+            nativeImage: { createFromBuffer: () => image },
+            desktopCapturer: { getSources: async () => {
+                calls.captures++;
+                if (options.captureFailure) throw new Error('Permission denied');
+                return [{display_id: '99', thumbnail: image}, {display_id: '7', thumbnail: {
+                    ...image, toJPEG: () => { calls.displayIds.push(7); return image.toJPEG(); }
+                }}];
+            } } },
         '../common/ai/factory': { createStreamingLLM: () => ({ streamChat: async messages => {
             calls.prompts.push(messages);
+            if (options.providerError) throw new Error(options.providerError);
+            if (options.onRequest) options.onRequest();
             if (failImage && calls.prompts.length === 1) throw new Error('image unsupported');
             if (controls.fallback && calls.prompts.length === 2) return controls.fallback;
             let offset=0;
-            return { body: { getReader: () => ({ cancel: async () => {}, read: async () => offset<chunks.length ? {done:false,value:chunks[offset++]} : {done:true} }) } };
+            return { body: { getReader: () => ({ cancel: async () => {}, read: async () => { if (options.streamError) throw new Error('Stream disconnected'); return offset<chunks.length ? {done:false,value:chunks[offset++]} : {done:true}; } }) } };
         } }) },
         '../../window/windowManager': { windowPool: new Map([['ask', window]]) },
         '../../bridge/internalBridge': bridge,
@@ -37,7 +51,11 @@ function harness(transcripts = [], chunks = [], interview = null, failImage = fa
         },
         '../common/services/insightsScreenContext': { remember: (...args) => calls.screens.push(args) },
         '../common/services/authService': { getCurrentUserId: () => controls.owner || 'owner-a' },
-        './repositories': { addAiMessage: async entry => controls.save?.(entry) },
+        './repositories': { addAiMessage: async entry => controls.save?.(entry), getAllAiMessagesBySessionId: async () => [] },
+        '../common/repositories/feed': {
+            list: async sessionId => ({ entries: calls.feed.filter(entry => entry.sessionId === sessionId), hasMore: false }),
+            save: async (sessionId,kind,entry) => { const value={...entry,sessionId};const index=calls.feed.findIndex(e=>e.id===entry.id); if(index<0) calls.feed.push(value); else calls.feed[index]=value;return entry; }
+        },
         '../common/prompts/promptBuilder': { getSystemPrompt: (kind, context) => context },
         '../common/services/modelStateService': { getCurrentModelInfo: async () => ({ provider: 'openai', apiKey: 'synthetic', model: 'synthetic' }) },
         '../listen/stt/repositories': { getAllTranscriptsBySessionId: async sessionId => {
@@ -124,22 +142,19 @@ test('Ask composer remains available throughout loading, streaming and completio
     assert.equal(service.state.showTextInput, true);
 });
 
-test('an older cancelled question cannot reset the state of a newer question', async () => {
-    let release, releaseNew;
+test('a second request is blocked while a previous question is running, without changing its state', async () => {
+    let release;
     const pendingSession = new Promise(resolve => { release = resolve; });
-    const pendingNewSession = new Promise(resolve => { releaseNew = resolve; });
-    let requests = 0;
-    const controls = { activeSession: () => ++requests === 1 ? pendingSession : pendingNewSession };
+    const controls = { activeSession: () => pendingSession };
     const { service } = harness([], [], null, false, controls);
     const oldQuestion = service.sendMessage('Old question');
-    const newQuestion = service.sendMessage('New question');
-    const stateAfterNewQuestion = JSON.stringify(service.state);
+    const stateBeforeNewQuestion = JSON.stringify(service.state);
+    const result = await service.sendMessage('New question');
+    assert.equal(result.success, false);
+    assert.match(result.error, /Wait for the current request/);
+    assert.equal(JSON.stringify(service.state), stateBeforeNewQuestion);
     release('active-listen-session');
     await oldQuestion;
-    assert.equal(JSON.stringify(service.state), stateAfterNewQuestion);
-    assert.equal(service.state.currentQuestion, 'New question');
-    releaseNew('active-listen-session');
-    await newQuestion;
 });
 
 test('ordinary Ask includes real stored transcripts from the active session in its model request', async () => {
@@ -218,6 +233,7 @@ test('deleting context while a text fallback awaits headers cancels its reader a
     resolve({ body: { getReader: () => ({ cancel: async () => { cancelled++; }, read: async () => { reads++; return { done: true }; } }) } });
     const result = await request;
     assert.equal(result.success, false); assert.match(result.error, /cancelled/); assert.equal(cancelled, 1); assert.equal(reads, 0);
+    assert.equal(service.state.isLoading, false); assert.equal(service.state.isStreaming, false); assert.equal(service.state.showTextInput, true);
 });
 
 
@@ -275,4 +291,141 @@ test('closing Ask during pending user/assistant persistence cannot reattach an o
         await saving; await h.service.closeAskWindow(); finish(); await request;
         assert.equal(events.filter(event => event.role === role).length, 0);
     });
+});
+
+
+test('shortcut captures the pointer display, appends in order, and never sends a question', async () => {
+    const {service, calls} = harness();
+    const results = await Promise.all([service.captureAttachment(), service.captureAttachment()]);
+    assert.ok(results.every(r => r.success));
+    const state = service.getAttachmentState();
+    assert.equal(state.attachments.length, 2);
+    assert.notEqual(state.attachments[0].id, state.attachments[1].id);
+    assert.deepEqual(calls.displayIds, [7, 7]);
+    assert.equal(calls.prompts.length, 0);
+    assert.equal(state.capturePending, 0);
+    assert.equal('base64' in state.attachments[0], false);
+    service.removeAttachment(state.attachments[0].id);
+    assert.equal(service.getAttachmentState().attachments[0].id, state.attachments[1].id);
+});
+
+test('explicit screenshots replace automatic capture and retain audio context', async () => {
+    const {service, calls} = harness([{speaker:'Me', text:'Compare both captures'}]);
+    await service.captureAttachment();
+    await service.captureAttachment();
+    const ids = service.getAttachmentState().attachments.map(a => a.id);
+    const result = await service.sendMessage({text:'Compare these', attachmentIds:ids});
+    assert.equal(result.success, true);
+    assert.equal(calls.captures, 2);
+    assert.equal(calls.prompts[0][1].content.filter(p => p.type === 'image_url').length, 2);
+    assert.match(calls.prompts[0][0].content, /Compare both captures/);
+    assert.equal(service.getAttachmentState().attachments.length, 0);
+    assert.equal(service.state.submittedAttachments.length, 2);
+});
+
+test('invalid attachment IDs never send or capture', async () => {
+    const {service, calls} = harness();
+    const result = await service.sendMessage({text:'Question', attachmentIds:['forged']});
+    assert.equal(result.success, false);
+    assert.equal(calls.prompts.length, 0);
+    assert.equal(calls.captures, 0);
+});
+
+test('explicit provider image failure retains attachments without text-only retry', async () => {
+    const {service, calls} = harness([], [], {providerError:'Unsupported image vision'});
+    await service.captureAttachment();
+    const ids = service.getAttachmentState().attachments.map(a => a.id);
+    assert.equal((await service.sendMessage({text:'Question', attachmentIds:ids})).success, false);
+    assert.equal(calls.prompts.length, 1);
+    assert.equal(service.getAttachmentState().attachments.length, 1);
+});
+
+test('stream failure retains attachments for retry', async () => {
+    const {service} = harness([], [], {streamError:true});
+    await service.captureAttachment();
+    const ids = service.getAttachmentState().attachments.map(a => a.id);
+    assert.equal((await service.sendMessage({text:'Question', attachmentIds:ids})).success, false);
+    assert.equal(service.getAttachmentState().attachments.length, 1);
+    assert.equal(service.requestActive, false);
+});
+
+test('capture limits and permission failures are reported without submitting', async () => {
+    const {service, calls} = harness();
+    for (let n=0; n<5; n++) await service.captureAttachment();
+    assert.equal((await service.captureAttachment()).success, false);
+    assert.equal(calls.captures, 5);
+    assert.match(service.getAttachmentState().attachmentError, /five/);
+    service.attachments.values().next().value.bytes = 20 * 1024 * 1024;
+    service.removeAttachment([...service.attachments.keys()][4]);
+    assert.equal((await service.captureAttachment()).success, false);
+    assert.match(service.getAttachmentState().attachmentError, /20 MB/);
+    const denied = harness([], [], {captureFailure:true});
+    assert.equal((await denied.service.captureAttachment()).success, false);
+    assert.equal(denied.service.getAttachmentState().attachments.length, 0);
+    assert.match(denied.service.getAttachmentState().attachmentError, /Permission denied/);
+});
+
+test('captures added during a response survive completion of the submitted draft', async () => {
+    let capture;
+    let service;
+    const setup = harness([], [], {onRequest: () => { capture = service.captureAttachment(); }});
+    service = setup.service;
+    await service.captureAttachment();
+    const ids = service.getAttachmentState().attachments.map(a => a.id);
+    assert.equal((await service.sendMessage({text:'Question', attachmentIds:ids})).success, true);
+    await capture;
+    const remaining = service.getAttachmentState().attachments;
+    assert.equal(remaining.length, 1);
+    assert.ok(!ids.includes(remaining[0].id));
+});
+
+test('closing Ask retains pending screenshots and screen-only shortcut does not bypass attachments', async () => {
+    const {service, calls} = harness();
+    await service.captureAttachment();
+    await service.closeAskWindow();
+    assert.equal(service.getAttachmentState().attachments.length, 1);
+    await service.toggleAskButton(true);
+    assert.equal(calls.prompts.length, 0);
+    service.clearDraftAttachments();
+    assert.equal(service.getAttachmentState().attachments.length, 0);
+});
+
+test('Ask feed retains each question and answer instead of overwriting earlier responses', async () => {
+    const chunk=Buffer.from('data: {"choices":[{"delta":{"content":"Saved answer"}}]}\n\ndata: [DONE]\n\n');
+    const {service,calls}=harness([], [chunk]);
+    await service.sendMessage('First question');await service.sendMessage('Second question');
+    assert.equal(calls.feed.length,2);
+    assert.equal(calls.feed[0].question,'First question');assert.equal(calls.feed[0].answer,'Saved answer');
+    assert.equal(calls.feed[1].question,'Second question');assert.equal(calls.feed[1].status,'complete');
+});
+
+test('failed Ask requests remain visible in saved history', async () => {
+    const {service,calls}=harness([], [], {providerError:'Unavailable'});
+    await service.sendMessage('Keep this failed question');
+    assert.equal(calls.feed.length,1);assert.equal(calls.feed[0].status,'failed');assert.match(calls.feed[0].error,/Unavailable/);
+});
+
+
+test('reviewed Ask history cannot be loaded after switching to another account', async () => {
+    const controls = {};
+    const h = harness([], [], null, false, controls);
+    await h.service.sendMessageForSession('Reviewed question', 'review');
+    controls.owner = 'owner-b';
+    await assert.rejects(h.service.getFeed(), /unavailable/);
+});
+
+
+test('account changes clear screenshot drafts and invalidate queued captures without reopening Ask', async () => {
+    const controls = {};
+    const {service,calls} = harness([], [], null, false, controls);
+    await service.captureAttachment();
+    assert.equal(service.attachments.size, 1);
+    const focusCount=calls.focuses;
+    const pending=service.captureAttachment();
+    service.resetForOwnerChange();
+    controls.owner='owner-b';
+    assert.equal((await pending).success,false);
+    assert.equal(service.attachments.size,0);
+    assert.equal(service.state.capturePending,0);
+    assert.equal(calls.focuses,focusCount);
 });

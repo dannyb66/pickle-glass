@@ -4,6 +4,9 @@ const sessionRepository = require('../../common/repositories/session');
 const summaryRepository = require('./repositories');
 const modelStateService = require('../../common/services/modelStateService');
 const interviewContext = require('../../common/services/interviewContextService');
+const feedRepository = require('../../common/repositories/feed');
+const InsightScheduler = require('./insightScheduler');
+const cadence = require('./insightSettings');
 const CONTEXT_CHARS = 12000;
 const FORMAT = `Analyze the supplied observations and provide concise insights in this exact format:
 **Summary Overview**
@@ -36,6 +39,10 @@ class SummaryService {
         this.manualRequests = 0;
         this.deferredAuto = false;
         this.requestSequence = 0;
+        this.pendingFinal = false;
+        this.contextVersion = 0;
+        this.lastAnalyzedVersion = 0;
+        this.scheduler = new InsightScheduler({ ...cadence.get(), run: () => this.runScheduledAnalysis() });
         this.state = { phase: 'idle', lastUpdated: null, error: '', progress: '', scope: 'recent', coveredTurns: 0, totalTurns: 0, condensed: false };
         this.onAnalysisComplete = null;
         this.onStatusUpdate = null;
@@ -47,11 +54,63 @@ class SummaryService {
     setCallbacks({ onAnalysisComplete, onStatusUpdate }) { this.onAnalysisComplete = onAnalysisComplete; this.onStatusUpdate = onStatusUpdate; }
     setSessionId(sessionId, { isRecording = true } = {}) {
         this.generation++;
+        this.scheduler.reset();
+        this.pendingFinal = false;
+        this.contextVersion = 0;
+        this.lastAnalyzedVersion = 0;
         this.currentSessionId = sessionId;
         this.sessionOwner = sessionId ? this.owner() : null;
         this.isRecording = !!sessionId && isRecording;
         const profile = sessionId ? interviewContext.context(sessionId).profile : null;
         this.contextLabel = sessionId ? (profile ? `Interview: ${profile.name} · v${profile.revision}` : 'Generic mode') : '';
+        this.restoreFeed();
+    }
+    async restoreFeed() {
+        const generation = this.generation, sessionId = this.currentSessionId;
+        if (!sessionId) { this.sendToRenderer('insights-feed', { entries: [], reset: true, sessionId: null }); return; }
+        try {
+            const page = await this.getFeed();
+            if (generation !== this.generation || sessionId !== this.currentSessionId || this.sessionOwner !== this.owner()) return;
+            if (!this.previousAnalysisResult) this.previousAnalysisResult = page.entries.at(-1)?.data || null;
+            this.sendToRenderer('insights-feed', { ...page, reset: true });
+        } catch (error) {
+            if (generation === this.generation) this.broadcastState({ error: `Insight history could not be loaded: ${error.message}` });
+        }
+    }
+    async getFeed(before = null, selectedSessionId = null) {
+        const owner = this.owner();
+        const sessions = !selectedSessionId && !this.currentSessionId && sessionRepository.getAllByUserId ? await sessionRepository.getAllByUserId() : [];
+        const sessionId = selectedSessionId || this.currentSessionId || sessions[0]?.id;
+        if (!sessionId) return { entries: [], hasMore: false };
+        if (!selectedSessionId && this.currentSessionId && this.sessionOwner !== owner) return { entries: [], hasMore: false };
+        const session = await sessionRepository.getById(sessionId);
+        if (!session || session.uid !== owner || owner !== this.owner()) throw new Error('This history is unavailable for the current account.');
+        let page = await feedRepository.list(sessionId, 'insights', before);
+        if (!before && !page.entries.length && summaryRepository.getSummaryBySessionId) {
+            const legacy = await summaryRepository.getSummaryBySessionId(sessionId);
+            if (owner !== this.owner()) return { entries: [], hasMore: false };
+            if (legacy?.text) {
+                const rawTime = legacy.generated_at;
+                const timestamp = rawTime?.toMillis ? rawTime.toMillis() : (Number(rawTime) * 1000 || Date.now());
+                await feedRepository.save(sessionId, 'insights', { id: `${sessionId}-legacy-summary`, timestamp, data: this.parseResponseText(legacy.text, null) });
+                page = await feedRepository.list(sessionId, 'insights');
+            }
+        }
+        if (owner !== this.owner()) return { entries: [], hasMore: false };
+        return { ...page, sessionId };
+    }
+    configureCadence(value) {
+        const settings = cadence.set(value);
+        this.scheduler.configure(settings);
+        return settings;
+    }
+    async finish() {
+        if (this.autoEnabled && this.currentSessionId && this.sessionOwner === this.owner()) {
+            if (this.pendingFinal && !this.scheduler.pending) this.scheduler.add();
+            await this.scheduler.flush(true);
+        }
+        this.pendingFinal = false;
+        this.scheduler.reset();
     }
     setRecording(recording) {
         this.isRecording = !!this.currentSessionId && recording;
@@ -70,11 +129,16 @@ class SummaryService {
     resetConversationHistory() {
         this.generation++;
         this.autoQueued = null;
+        this.scheduler.reset();
+        this.pendingFinal = false;
+        this.contextVersion = 0;
+        this.lastAnalyzedVersion = 0;
         this.conversationHistory = [];
         this.previousAnalysisResult = null;
         this.analysisHistory = [];
         this.state = { phase: 'idle', lastUpdated: null, error: '', progress: '', scope: 'recent', coveredTurns: 0, totalTurns: 0, condensed: false };
         this.broadcastState();
+        this.restoreFeed();
     }
     clearSession() {
         require('../../common/services/insightsScreenContext').clear(this.currentSessionId);
@@ -88,10 +152,19 @@ class SummaryService {
     }
     onChatMessageSaved(role) {
         if (role !== 'assistant' || !this.autoEnabled || !this.currentSessionId) return;
-        if (this.manualRequests) { this.deferredAuto = true; return; }
-        return this.enqueue('recent', { automatic: true }).catch(() => null);
+        this.contextVersion++;
+        this.scheduler.add();
+    }
+    async runScheduledAnalysis() {
+        // Manual analysis retains priority; new context waits rather than invalidating it.
+        while (this.manualRequests) await this.queue;
+        if (!this.autoEnabled || !this.currentSessionId) return null;
+        if (this.contextVersion <= this.lastAnalyzedVersion) return true;
+        return this.enqueue('recent', { automatic: true });
     }
     onSessionStopped() {
+        this.pendingFinal = this.contextVersion > this.lastAnalyzedVersion;
+        this.scheduler.reset();
         this.generation++;
         this.autoQueued = null;
         this.isRecording = false;
@@ -100,23 +173,22 @@ class SummaryService {
     setAutoEnabled(enabled) {
         if (typeof enabled !== 'boolean') throw new Error('Choose whether automatic insights are enabled.');
         this.autoEnabled = enabled;
-        if (!enabled) this.autoQueued = null;
+        if (!enabled) { this.autoQueued = null; this.scheduler.reset(); this.pendingFinal = false; }
         this.broadcastState(!enabled && this.state.automatic ? { phase: this.previousAnalysisResult ? 'updated' : 'idle', progress: '', error: '' } : {});
         return this.getState();
     }
     addConversationTurn(speaker, text) {
         if (!text.trim()) return;
+        this.contextVersion++;
         this.conversationHistory.push(`${speaker.toLowerCase()}: ${text.trim()}`);
         this.broadcastState({ totalTurns: this.conversationHistory.length });
+        if (!this.isRecording) this.pendingFinal = true;
         this.triggerAnalysisIfNeeded();
     }
     getConversationHistory() { return this.conversationHistory; }
     formatConversationForPrompt(texts, maxTurns = 30) { return texts.slice(-maxTurns).join('\n'); }
     triggerAnalysisIfNeeded() {
-        if (this.autoEnabled && this.isRecording && this.conversationHistory.length >= 5 && this.conversationHistory.length % 5 === 0) {
-            if (this.manualRequests) { this.deferredAuto = true; return; }
-            return this.enqueue('recent', { automatic: true }).catch(() => null);
-        }
+        if (this.autoEnabled && this.isRecording) this.scheduler.add();
     }
     requestAnalysis(scope = 'recent') {
         if (!['recent', 'entire'].includes(scope)) throw new Error('Choose recent conversation or the entire session.');
@@ -168,6 +240,8 @@ class SummaryService {
         interviewContext.snapshot(job.sessionId);
     }
     async analyze(job, current, status) {
+        const contextVersion = this.contextVersion;
+        const pendingTurns = this.scheduler.pending;
         status({ phase: 'analyzing', progress: 'Loading chat and audio context', error: '' });
         // Supplied text is retained only for compatibility with internal callers.
         let texts = job.texts;
@@ -281,10 +355,17 @@ class SummaryService {
         if (job.sessionId) await summaryRepository.saveSummary({ sessionId: job.sessionId, text: responseText, tldr: data.summary.join('\n'),
             bullet_json: JSON.stringify(data.topic.bullets), action_json: JSON.stringify(data.actions), model: model.model });
         if (!current() || job.id !== this.requestSequence) return null;
+        const entry = job.sessionId ? await feedRepository.save(job.sessionId, 'insights', {
+            timestamp: Date.now(), data, scope: job.scope,
+        }) : null;
+        if (!current() || job.id !== this.requestSequence) return null;
+        this.lastAnalyzedVersion = Math.max(this.lastAnalyzedVersion, contextVersion);
+        if (!job.automatic) this.scheduler.acknowledge(pendingTurns);
         this.previousAnalysisResult = data;
         this.analysisHistory.push({ timestamp: Date.now(), data, conversationLength: totalTurns });
         this.analysisHistory = this.analysisHistory.slice(-10);
         this.sendToRenderer('summary-update', { ...data, sessionId: job.sessionId });
+        if (entry) this.sendToRenderer('insights-feed', { entries: [entry], sessionId: job.sessionId });
         status({ phase: 'updated', error: '', progress: '', lastUpdated: Date.now(), scope: job.scope,
             coveredTurns: observations.length + images.length, totalTurns: Math.max(totalTurns, this.conversationHistory.length) + images.length, condensed: chunks.length > 1,
             sources: { chat: selectedEntries.filter(entry => entry.kind === 'chat').length, audio: selectedEntries.filter(entry => entry.kind === 'audio').length,

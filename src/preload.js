@@ -159,7 +159,18 @@ contextBridge.exposeInMainWorld('api', {
     adjustWindowHeight: (winName, height) => ipcRenderer.invoke('adjust-window-height', { winName, height }),
     
     // Message Handling
-    sendMessage: (text) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text),
+    sendMessage: (payload) => ipcRenderer.invoke('ask:sendQuestionFromAsk', payload),
+    getFeed: (before, sessionId) => ipcRenderer.invoke('ask:getFeed', before, sessionId),
+    getFeedSessions: () => ipcRenderer.invoke('feed:listSessions'),
+    onFeedPage: (callback) => ipcRenderer.on('ask:feedPage', callback),
+    removeOnFeedPage: (callback) => ipcRenderer.removeListener('ask:feedPage', callback),
+    onNavigateResponse: (callback) => ipcRenderer.on('ask:navigateResponse', callback),
+    removeOnNavigateResponse: (callback) => ipcRenderer.removeListener('ask:navigateResponse', callback),
+    onSubmitDraft: (callback) => ipcRenderer.on('ask:submitDraft', callback),
+    removeOnSubmitDraft: (callback) => ipcRenderer.removeListener('ask:submitDraft', callback),
+    getAttachments: () => ipcRenderer.invoke('ask:getAttachments'),
+    removeAttachment: (id) => ipcRenderer.invoke('ask:removeAttachment', id),
+    clearDraftAttachments: () => ipcRenderer.invoke('ask:clearDraftAttachments'),
 
     // Listeners
     onAskStateUpdate: (callback) => ipcRenderer.on('ask:stateUpdate', callback),
@@ -211,6 +222,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // src/ui/listen/summary/SummaryView.js
   summaryView: {
+    getFeed: (before, sessionId) => ipcRenderer.invoke('insights:getFeed', before, sessionId),
+    getFeedSessions: () => ipcRenderer.invoke('feed:listSessions'),
+    onFeed: (callback) => ipcRenderer.on('insights-feed', callback),
+    removeOnFeed: (callback) => ipcRenderer.removeListener('insights-feed', callback),
     // Message Handling
     sendQuestionFromSummary: (text, sessionId) => ipcRenderer.invoke('ask:sendQuestionFromSummary', text, sessionId),
     
@@ -238,6 +253,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // src/ui/settings/SettingsView.js
   settingsView: {
+    getInsightCadence: () => ipcRenderer.invoke('insights:getCadence'),
+    setInsightCadence: (value) => ipcRenderer.invoke('insights:setCadence', value),
     // User & Auth
     getCurrentUser: () => ipcRenderer.invoke('get-current-user'),
     openPersonalizePage: () => ipcRenderer.invoke('open-personalize-page'),

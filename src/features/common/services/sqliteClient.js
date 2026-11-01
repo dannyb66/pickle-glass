@@ -129,6 +129,7 @@ class SQLiteClient {
                 this.updateTable(tableName, tableSchema);
             }
         }
+        this.db.exec('CREATE INDEX IF NOT EXISTS feed_entries_session_kind_time ON feed_entries(session_id, kind, timestamp, id)');
         console.log('[DB Sync] Schema synchronization finished.');
     }
 
@@ -188,6 +189,7 @@ class SQLiteClient {
             LEFT JOIN ai_messages a ON s.id = a.session_id
             LEFT JOIN summaries su ON s.id = su.session_id
             WHERE t.id IS NULL AND a.id IS NULL AND su.session_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM feed_entries f WHERE f.session_id = s.id)
         `;
 
         const rows = this.db.prepare(query).all();

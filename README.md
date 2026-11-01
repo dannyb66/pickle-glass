@@ -76,7 +76,7 @@ Live Insights works with saved Ask questions and answers, optional audio transcr
 - **Recent conversation → Analyze now** reviews the latest 30 saved chat messages and audio segments in chronological order.
 - **Entire session → Analyze now** reviews all saved chat and transcript text, processing long sessions in parts before synthesizing the result. The status reports coverage and sources. Latest user questions guide the analysis; AI answers are treated as unverified drafts.
 - **Include screen**, enabled by default, sends up to five recent Ask screenshots and a fresh current screenshot with each manual analysis. Automatic updates reuse cached snapshots without taking a new screenshot. Disable this option for text-only Insights.
-- **Auto-update** runs after each saved AI answer, even with Listen off, and every five finalized audio segments while recording. It reviews recent context. Turn it off to analyze only when requested.
+- **Auto-update** batches new completed chat turns and finalized audio segments: it refreshes after five new turns or 30 seconds with pending text, whichever comes first. Both thresholds are configurable in Settings. It reviews recent context, even with Listen off for chat-only sessions. Turn it off to analyze only when requested.
 - **×** hides the panel without stopping capture. The header's **Insights** button and **⌘⇧I** always open and refresh entire-session analysis.
 - **Stop** flushes pending transcript writes and preserves the session for analysis and follow-up questions. **Done** hides the panel; Insights can reopen it.
 - Starting another Listen session, switching accounts, deleting the profile or choosing generic mode clears the previous review.
@@ -108,7 +108,7 @@ All bindings can be changed or disabled in **Settings → Shortcuts**. Use Ctrl 
 
 Local records are stored in `~/Library/Application Support/Glass/pickleglass.db`. Interview profiles, pinned snapshots and interview sessions remain local, including for signed-in users. Signed-in generic session history uses Firebase. Starting an AI request sends its selected context to the configured provider.
 
-Saved text includes finalized transcripts, submitted questions, completed AI answers and the latest summary. Records survive restart and have no application age limit. Raw audio/video, screenshots, canceled responses and earlier summary revisions are not a complete recording archive. Explicit deletion or clearing app data removes records.
+Saved text includes finalized transcripts, submitted questions, completed AI answers and the latest summary. New Ask and Insights feed entries also preserve answer status, partial failed/cancelled answers, summary snapshots and explicit screenshot thumbnails. Records survive restart and have no application age limit. Raw audio/video and original screenshots are not a recording archive; older unsaved previews and overwritten summary revisions cannot be recovered. Explicit deletion or clearing app data removes records.
 
 There is no built-in backup/export/restore workflow. Signed-in cloud records also depend on encryption keys retained in the OS keychain; its memory-only fallback cannot guarantee decryption after restart. See the [persistence limits](docs/interview-context.md#long-term-records).
 
@@ -132,3 +132,17 @@ For development background, see the [contributing guide](CONTRIBUTING.md), [arch
 ## Attribution and license
 
 Glass is based on [Pickle Glass](https://github.com/pickle-com/glass), which credits [Cheating Daddy](https://github.com/sohzm/cheating-daddy). This fork retains the [GPL-3.0 license](LICENSE).
+
+Ordinary Ask requests include stored transcripts from the active session along with the current screenshot. Explicit screen-only requests omit audio. Streamed answers preserve events split across network chunks and UTF-8 boundaries. OpenAI transcription uses the GA `session.update` format and reports readiness after the server acknowledges configuration; a socket opening alone is insufficient. See the [OpenAI Realtime transcription reference](https://developers.openai.com/api/reference/resources/realtime/client-events).
+
+### Ask and Insights history
+
+Ask appends questions and streamed answers to a scrollable feed, including screenshot previews and failed or cancelled requests. Both Ask and Insights have a session selector and a **Load older** button. New content follows automatically while you are at the bottom; scrolling up preserves your position and shows a button to return to the latest update. The Ask previous/next-answer and scroll shortcuts navigate this feed.
+
+Insights refresh after **five new completed chat turns/finalized transcript segments or 30 seconds with pending text**, whichever comes first. Change both thresholds in Settings → insight cadence. Silence without new transcript content generates no request. Only one insight request runs at a time; pending text is included in a later update, failed updates retry after the configured interval, and Stop attempts a final update. Ask remains manually triggered.
+
+Feed history is saved through the existing local SQLite or signed-in Firebase repository. Existing saved Ask messages and the latest session summary are imported on first load; older overwritten insights and unsaved screenshot previews cannot be recovered. New sessions have independent feeds. Selecting a historical session changes the displayed history; new Ask submissions use the current active session.
+
+Run `npm run test:electron-feeds` on a desktop machine for offline Electron checks of scrolling, pagination, session isolation, native SQLite upgrades, history restoration, and deletion. SQL unit tests use `node:sqlite` on Node 22+ and are skipped on Node 20; the Electron storage check uses the app’s native SQLite dependency.
+
+Press **Cmd+Shift+S** (Windows: **Ctrl+Shift+S**) to capture the screen under your pointer into the Ask draft without sending a question. Repeat for up to five removable screenshots, then type and Submit. Attached images replace automatic submission-time capture; drafts survive hiding the window but not app restarts.

@@ -104,9 +104,24 @@ module.exports = {
     ipcMain.handle('ollama:shutdown', async (event, force = false) => await ollamaService.handleShutdown(force));
 
     // Ask
+    const validateFeedSession = async id => {
+        if (!id) return null;
+        const sessions = await require('../features/common/repositories/session').getAllByUserId();
+        if (!sessions.some(session => session.id === id)) throw new Error('Session not found.');
+        return id;
+    };
+    ipcMain.handle('feed:listSessions', () => require('../features/common/repositories/session').getAllByUserId());
+    ipcMain.handle('ask:getFeed', async (event, before, sessionId) => askService.getFeed(before, await validateFeedSession(sessionId)));
+    ipcMain.handle('insights:getFeed', async (event, before, sessionId) => listenService.summaryService.getFeed(before, await validateFeedSession(sessionId)));
+    ipcMain.handle('insights:getCadence', () => require('../features/listen/summary/insightSettings').get());
+    ipcMain.handle('insights:setCadence', (event, value) => listenService.summaryService.configureCadence(value));
+    ipcMain.handle('ask:getAttachments', () => askService.getAttachmentState());
+    ipcMain.handle('ask:removeAttachment', (event, id) => askService.removeAttachment(id));
+    ipcMain.handle('ask:clearDraftAttachments', () => askService.clearDraftAttachments());
     ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => await askService.sendMessage(userPrompt));
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt, sessionId) => {
-      if (!sessionId || sessionId !== listenService.summaryService.currentSessionId) throw new Error('Open the reviewed session before asking about its insights.');
+      if (!sessionId) throw new Error('Select an insight session before asking about it.');
+      await validateFeedSession(sessionId);
       return askService.sendMessageForSession(userPrompt, sessionId);
     });
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());

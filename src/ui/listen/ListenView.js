@@ -471,6 +471,7 @@ export class ListenView extends LitElement {
 
     connectedCallback() {
         super.connectedCallback();
+        this.addEventListener('feed-resized', this.adjustWindowHeight);
         // Only start timer if session is active
         if (this.isSessionActive) {
             this.startTimer();
@@ -484,14 +485,14 @@ export class ListenView extends LitElement {
             window.api.insights.onState(this._insightsStateListener);
             this._reloadInsights = async () => {
                 const epoch = this.ownerEpoch;
-                try { const state = await window.api.insights.getState(); if (epoch === this.ownerEpoch) this.analysisState = state; }
+                try { const state = await window.api.insights.getState(); if (epoch === this.ownerEpoch) {this.analysisState = state;this.shadowRoot.querySelector('summary-view')?.reloadFeed();} }
                 catch (error) { if (epoch === this.ownerEpoch) this.actionError = error.message; }
             };
             this._ownerChanging = () => {
                 this.ownerEpoch++;
                 this.actionError = '';
                 this.analysisState = { phase: 'idle', sessionId: null, autoEnabled: true, data: null };
-                this.shadowRoot.querySelector('summary-view')?.resetAnalysis();
+                this.shadowRoot.querySelector('summary-view')?.resetAnalysis({reload:false});
                 this.shadowRoot.querySelector('stt-view')?.resetTranscript();
                 this.stopTimer(); this.isSessionActive = false;
             };
@@ -536,6 +537,7 @@ export class ListenView extends LitElement {
             window.api.interview.removeOnOwnerChanging(this._ownerChanging);
             window.api.common.removeOnUserStateChanged(this._reloadInsights);
         }
+        this.removeEventListener('feed-resized', this.adjustWindowHeight);
 
         if (this.adjustHeightThrottle) {
             clearTimeout(this.adjustHeightThrottle);
@@ -581,7 +583,8 @@ export class ListenView extends LitElement {
                 const topBarHeight = topBar.offsetHeight;
 
                 const scroller = activeContent.shadowRoot?.querySelector('.insights-container, .transcription-container');
-                const contentHeight = Math.max(150, scroller?.scrollHeight || activeContent.scrollHeight);
+                const feed=activeContent.shadowRoot?.querySelector('conversation-feed');
+                const contentHeight = Math.max(150, feed?.naturalHeight || scroller?.scrollHeight || activeContent.scrollHeight);
 
                 const controlsHeight = (this.shadowRoot.querySelector('.insights-controls')?.offsetHeight || 0)
                     + (this.shadowRoot.querySelector('.analysis-meta')?.offsetHeight || 0);
@@ -602,6 +605,8 @@ export class ListenView extends LitElement {
 
     scrollContent(direction) {
         const view = this.shadowRoot.querySelector(this.viewMode === 'transcript' ? 'stt-view' : 'summary-view');
+        const feed=view?.shadowRoot?.querySelector('conversation-feed');
+        if(feed){feed.scrollByAmount(direction==='up'?-150:150);return;}
         const content = view?.shadowRoot?.querySelector('.insights-container, .transcription-container');
         if (content) content.scrollTop += direction === 'up' ? -150 : 150;
     }

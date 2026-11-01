@@ -60,7 +60,9 @@ class AuthService {
                     // Stop capture and cancel source-bearing requests BEFORE the
                     // owner changes, so late callbacks cannot route into Firebase.
                     BrowserWindow.getAllWindows().forEach(win => { if (!win.isDestroyed()) win.webContents.send('interview:owner-changing'); });
-                    await require('../../ask/askService').closeAskWindow();
+                    const ask = require('../../ask/askService');
+                    ask.resetForOwnerChange?.();
+                    await ask.closeAskWindow();
                     const listen = require('../../listen/listenService');
                     if (listen.currentSessionId) await listen.closeSession();
                     listen.clearReviewedSession();

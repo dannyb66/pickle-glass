@@ -60,22 +60,16 @@ async function updateTitle(id, title) {
 
 async function deleteWithRelatedData(id) {
     const db = getFirestoreInstance();
+    for (const name of ['transcripts', 'ai_messages', 'summary', 'ask_feed', 'insights_feed']) {
+        const snapshot = await getDocs(collection(db, `sessions/${id}/${name}`));
+        for (let offset = 0; offset < snapshot.docs.length; offset += 400) {
+            const batch = writeBatch(db);
+            snapshot.docs.slice(offset, offset + 400).forEach(d => batch.delete(d.ref));
+            await batch.commit();
+        }
+    }
     const batch = writeBatch(db);
-
-    const { transcripts, ai_messages, summary } = subCollections(id);
-    const [transcriptsSnap, aiMessagesSnap, summarySnap] = await Promise.all([
-        getDocs(query(transcripts)),
-        getDocs(query(ai_messages)),
-        getDocs(query(summary)),
-    ]);
-    
-    transcriptsSnap.forEach(d => batch.delete(d.ref));
-    aiMessagesSnap.forEach(d => batch.delete(d.ref));
-    summarySnap.forEach(d => batch.delete(d.ref));
-
-    const sessionRef = doc(sessionsCol(), id);
-    batch.delete(sessionRef);
-
+    batch.delete(doc(sessionsCol(), id));
     await batch.commit();
     return { success: true };
 }

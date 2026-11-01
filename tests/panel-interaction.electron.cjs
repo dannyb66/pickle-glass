@@ -15,6 +15,9 @@ const stub = `<base href="${pathToFileURL(path.join(root, 'src/ui/app/')).href}"
 window.qa={listeners:{},sent:[],state:{phase:'idle',sessionId:null,autoEnabled:true,data:null}};
 const group=name=>new Proxy({}, {get:(_,key)=> {
   if(key==='getState')return async()=>qa.state;
+  if(key==='getFeed')return async()=>({entries:[],hasMore:false,sessionId:'synthetic'});
+  if(key==='getFeedSessions')return async()=>[{id:'synthetic',title:'Synthetic session',started_at:1}];
+  if(key==='getAttachments')return async()=>({attachments:[]});
   if(key==='sendMessage')return async text=>{qa.sent.push(text);return {success:true}};
   if(key.startsWith('on'))return callback=>{qa.listeners[name+'.'+key]=callback};
   if(key.startsWith('removeOn'))return callback=>{const keyName=name+'.on'+key.slice(8);if(qa.listeners[keyName]===callback)delete qa.listeners[keyName]};
@@ -27,22 +30,29 @@ fs.writeFileSync(fixture, fs.readFileSync(path.join(root, 'src/ui/app/content.ht
 const getView = `document.querySelector('pickle-glass-app').shadowRoot.querySelector('ask-view, listen-view')`;
 async function evaluate(win, expression) { return win.webContents.executeJavaScript(expression, true); }
 async function geometry(win, type) {
-    return evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('#responseContainer')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('.insights-container')"};return {viewport:innerHeight,viewHeight:e.getBoundingClientRect().height,top:c.scrollTop,height:c.clientHeight,total:c.scrollHeight,bottom:c.getBoundingClientRect().bottom,inputBottom:e.shadowRoot.querySelector('.text-input-container')?.getBoundingClientRect().bottom,footerBottom:e.shadowRoot.querySelector('.analysis-meta')?.getBoundingClientRect().bottom}})()`);
+    return evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')"};return {viewport:innerHeight,viewHeight:e.getBoundingClientRect().height,top:c.scrollTop,height:c.clientHeight,total:c.scrollHeight,bottom:c.getBoundingClientRect().bottom,inputBottom:e.shadowRoot.querySelector('.text-input-container')?.getBoundingClientRect().bottom,footerBottom:e.shadowRoot.querySelector('.analysis-meta')?.getBoundingClientRect().bottom}})()`);
 }
 async function wheel(win, type) {
     const before = await geometry(win, type);
-    const point = await evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('#responseContainer')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('.insights-container')"};const r=c.getBoundingClientRect();return{x:Math.round(r.left+100),y:Math.round(r.top+Math.min(80,r.height/2))}})()`);
-    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {type:'mouseWheel',...point,deltaX:0,deltaY:180});
-    await pause(300);
+    const point = await evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')"};const r=c.getBoundingClientRect();return{x:Math.round(r.left+100),y:Math.round(r.top+Math.min(80,r.height/2))}})()`);
+    for(let attempt=0;attempt<3;attempt++){
+        app.focus({steal:true});win.moveTop();win.focus();win.webContents.focus();
+        await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {type:'mouseMoved',...point});
+        await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {type:'mouseWheel',...point,deltaX:0,deltaY:180});
+        await pause(300);
+        if((await geometry(win,type)).top>before.top)break;
+    }
     const after=await geometry(win,type); assert.ok(after.top>before.top, `${type}: native wheel must scroll: ${JSON.stringify({before,after,point})}`);
 }
 async function run(type, glass = false) {
     const win = new BrowserWindow({width:type==='ask'?600:400,height:500,frame:false,show:false,webPreferences:{backgroundThrottling:false}});
+    win.webContents.on('console-message', (_event, level, message, line, source) => {if(level>=2) console.error('Renderer:',message,source,line);});
     try {
         await win.loadFile(fixture, {query:{view:type,...(glass ? {glass:'true'} : {})}});
         await pause(250);
         app.focus({steal:true}); win.show(); win.focus(); win.webContents.focus(); win.webContents.debugger.attach('1.3');
         await evaluate(win, `(async()=>{const e=${getView};${type==='ask' ? `e.currentQuestion='Synthetic question';e.currentResponse=Array(100).fill('Synthetic long answer about queue fairness.').join('\\n\\n');e.isStreaming=true;e.showTextInput=true;` : `e.analysisState={phase:'updated',sessionId:'synthetic',autoEnabled:true,data:{summary:Array(5).fill('Synthetic insight '.repeat(180)),topic:{header:'Topic',bullets:[]},actions:[],followUps:[]}};`}await e.updateComplete})()`);
+        await evaluate(win, `(async()=>{const e=${getView};${type==='ask' ? `e.liveEntry={id:'synthetic',timestamp:1,question:e.currentQuestion,answer:e.currentResponse,status:'streaming'};await e.updateComplete;` : `const summary=e.shadowRoot.querySelector('summary-view');summary.feedPage={sessionId:'synthetic',entries:[{id:'insight',timestamp:1,data:e.analysisState.data}]};await summary.updateComplete;`}await new Promise(r=>requestAnimationFrame(r))})()`);
         await pause(100);
         const initial = await geometry(win,type);
         assert.ok(initial.viewHeight<=initial.viewport+1, `${type}: panel must fit the actual app window: ${JSON.stringify(initial)}`);
@@ -50,13 +60,13 @@ async function run(type, glass = false) {
         assert.ok(initial.bottom<=initial.viewport+1, `${type}: scroller must stay inside the window`);
         if(type==='ask')assert.ok(initial.inputBottom<=initial.viewport+1, 'Ask composer must stay visible');
         else assert.ok(initial.footerBottom<=initial.viewport+1, 'Insights footer must stay visible');
-        await evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('#responseContainer')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('.insights-container')"};c.scrollTop=100})()`);
+        await evaluate(win, `(()=>{const e=${getView},c=${type==='ask' ? "e.shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')" : "e.shadowRoot.querySelector('summary-view').shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed')"};c.scrollTop=100})()`);
         await wheel(win,type);
         await evaluate(win, `(()=>{const e=${getView};qa.listeners['${type==='ask'?'askView.onScrollResponseDown':'insights.onScrollDown'}']()})()`);
         const afterKeyboard=await geometry(win,type);
         assert.ok(afterKeyboard.top>280, `${type}: shortcut must scroll`);
         if(type==='ask') {
-            await evaluate(win, `(()=>{const e=${getView};e.shadowRoot.querySelector('#responseContainer').scrollTop=200;e.currentResponse+='\\n\\nMore streamed content.'})()`);
+            await evaluate(win, `(()=>{const e=${getView};e.shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed').scrollTop=200;e.currentResponse+='\\n\\nMore streamed content.';e.liveEntry={...e.liveEntry,answer:e.currentResponse}})()`);
             await pause(100);
             assert.equal((await geometry(win,type)).top,200,'Streaming preserves the reading position');
             await evaluate(win, `(()=>{const e=${getView};qa.listeners['askView.onAskStateUpdate']({}, {currentResponse:e.currentResponse,currentQuestion:e.currentQuestion,isStreaming:true,isLoading:false,showTextInput:false})})()`);
@@ -78,15 +88,15 @@ async function run(type, glass = false) {
             const other=new BrowserWindow({width:200,height:100,show:true});
             try {
                 await other.loadURL('about:blank'); other.focus(); await pause(150);
-                app.focus({steal:true});win.focus();win.webContents.focus();await pause(300);
+                for(let attempt=0;attempt<5&&!win.isFocused();attempt++){app.focus({steal:true});win.show();win.moveTop();win.focus();win.webContents.focus();await pause(200);}
                 assert.equal(win.isFocused(),true,'Ask window can regain native focus');
                 assert.equal(await evaluate(win, `(${getView}).shadowRoot.activeElement?.id`),'textInput','Returning to Ask restores composer focus');
                 assert.equal(await evaluate(win, `(${getView}).shadowRoot.querySelector('#textInput').value`),'Follow-up draft','Switching windows preserves the draft');
             } finally {other.destroy();}
-            await evaluate(win, `qa.listeners['askView.onShowTextInput']({}, {submit:true})`);
+            await evaluate(win, `(()=>{const e=${getView};e.isStreaming=false;e.isLoading=false;qa.listeners['askView.onShowTextInput']({}, {submit:true})})()`);
             await pause(100);
-            assert.equal(await evaluate(win, `qa.sent.at(-1)`),'Follow-up draft','Cmd+Enter submits the actual draft');
-            await evaluate(win, `(()=>{const e=${getView},c=e.shadowRoot.querySelector('#responseContainer');c.scrollTop=c.scrollHeight;e.currentResponse+='\\n\\nFollowing the newest output.'})()`);
+            assert.equal(await evaluate(win, `qa.sent.at(-1).text`),'Follow-up draft','Cmd+Enter submits the actual draft');
+            await evaluate(win, `(()=>{const e=${getView},c=e.shadowRoot.querySelector('conversation-feed').shadowRoot.querySelector('.feed');c.scrollTop=c.scrollHeight;e.currentResponse+='\\n\\nFollowing the newest output.';e.liveEntry={...e.liveEntry,answer:e.currentResponse}})()`);
             await pause(100);
             const bottom=await geometry(win,type);
             assert.ok(bottom.total-bottom.top-bottom.height<2,'Streaming follows when already at the bottom');

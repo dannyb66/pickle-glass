@@ -1,3 +1,4 @@
+const summaryDependencies = require('./summary-test-dependencies.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -11,7 +12,7 @@ function load(relative, mocks, extras = {}) {
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src', relative), 'utf8'), {
         module, exports: module.exports, Buffer, TextDecoder, AbortController,
         process: { platform: 'linux' }, console: { log() {}, warn() {}, error() {} }, ...extras,
-        require(name) { if (name in mocks) return mocks[name]; return require(name); },
+        require(name) { if (name in summaryDependencies) return summaryDependencies[name]; if (name in mocks) return mocks[name]; return require(name); },
     });
     return module.exports;
 }

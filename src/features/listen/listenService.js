@@ -332,6 +332,7 @@ class ListenService {
             try { await this.sttService.closeSessions(); } catch (error) { captureError = error; }
             try { await this.stopMacOSAudioCapture(); } catch (error) { captureError ||= error; }
             while (this.pendingTranscriptWrites.size) await Promise.all([...this.pendingTranscriptWrites]);
+            if (preserveReview) await this.summaryService.finish?.();
             this.sessionGeneration++;
             this.currentSessionId = null;
             if (owner !== authService.getCurrentUserId()) throw new Error('User changed while closing the session.');

@@ -481,6 +481,7 @@ export class SettingsView extends LitElement {
 
     //////// after_modelStateService ////////
     static properties = {
+        insightTurns: {type:Number}, insightSeconds: {type:Number}, cadenceFeedback: {type:String},
         shortcuts: { type: Object, state: true },
         firebaseUser: { type: Object, state: true },
         isLoading: { type: Boolean, state: true },
@@ -907,6 +908,15 @@ export class SettingsView extends LitElement {
     }
     //////// after_modelStateService ////////
 
+    async saveInsightCadence() {
+        try {
+            const turns=Number(this.shadowRoot.querySelector('#insightTurns').value);
+            const seconds=Number(this.shadowRoot.querySelector('#insightSeconds').value);
+            await window.api.settingsView.setInsightCadence({turns,seconds});
+            this.cadenceFeedback='Insight cadence saved.';
+        } catch(error) {this.cadenceFeedback=error.message;}
+    }
+
     openShortcutEditor() {
         window.api.settingsView.openShortcutSettingsWindow();
     }
@@ -914,6 +924,7 @@ export class SettingsView extends LitElement {
     connectedCallback() {
         super.connectedCallback();
         
+        window.api?.settingsView.getInsightCadence().then(value=>{this.insightTurns=value.turns;this.insightSeconds=value.seconds;}).catch(console.error);
         this.setupEventListeners();
         this.setupIpcListeners();
         this.setupWindowResize();
@@ -1370,6 +1381,15 @@ export class SettingsView extends LitElement {
 
                 ${apiKeyManagementHTML}
                 ${modelSelectionHTML}
+                <div class="model-selection-section">
+                    <label>Refresh insights after new turns or elapsed seconds, whichever comes first.</label>
+                    <label for="insightTurns">New turns (1–100)</label>
+                    <input id="insightTurns" type="number" min="1" max="100" .value=${String(this.insightTurns || 5)} />
+                    <label for="insightSeconds">Seconds with pending content (5–600)</label>
+                    <input id="insightSeconds" type="number" min="5" max="600" .value=${String(this.insightSeconds || 30)} />
+                    <button class="settings-button" @click=${this.saveInsightCadence}>Save insight cadence</button>
+                    <div role="status">${this.cadenceFeedback || ''}</div>
+                </div>
 
                 <div class="buttons-section" style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 6px; margin-top: 6px;">
                     <button class="settings-button full-width" @click=${this.openShortcutEditor}>

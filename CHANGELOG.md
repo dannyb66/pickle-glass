@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Capture the display under the pointer into removable Ask screenshot attachments with Cmd/Ctrl+Shift+S.
+- Keep Ask answers and timestamped Insights in persistent, paginated feeds with session history and preserved reading position.
+- Configure insight refresh thresholds, defaulting to five new turns or 30 seconds of pending content, with serialized requests and a final update on Stop.
+
+
 ## [0.2.9] - 2026-10-23
 
 ### Fixed

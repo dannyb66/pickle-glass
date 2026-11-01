@@ -2,8 +2,17 @@ import { html, css, LitElement } from '../../ui/assets/lit-core-2.7.4.min.js';
 import '../common/ResponseFontControls.js';
 import { parser, parser_write, parser_end, default_renderer } from '../../ui/assets/smd.js';
 
+import '../common/ConversationFeed.js';
+
 export class AskView extends LitElement {
     static properties = {
+        feedPage: {type:Object},
+        liveEntry: {type:Object},
+        attachments: { type: Array },
+        submittedAttachments: { type: Array },
+        capturePending: { type: Number },
+        attachmentError: { type: String },
+        draftText: { type: String },
         currentResponse: { type: String },
         currentQuestion: { type: String },
         contextLabel: { type: String },
@@ -19,6 +28,18 @@ export class AskView extends LitElement {
     };
 
     static styles = css`
+        conversation-feed {flex:0 1 auto;min-height:0;overflow:hidden;}
+
+        .attachment-strip { display: flex; gap: 8px; padding: 8px; overflow-x: auto; flex-shrink: 0; }
+        .attachment { position: relative; flex-shrink: 0; margin: 0; }
+        .attachment img { width: 100px; height: 64px; object-fit: contain; border: 1px solid #777; border-radius: 6px; }
+        .attachment figcaption { font-size: 11px; color: #ddd; }
+        .attachment button { position: absolute; top: 0; right: 0; border: 0; border-radius: 4px; background: #333; color: white; cursor: pointer; }
+        .attachment-status { padding: 4px 8px; font-size: 12px; color: #ddd; }
+        .attachment-error { color: #ffb7b7; }
+        .draft-clear { background: transparent; color: #ddd; border: 1px solid #777; border-radius: 4px; cursor: pointer; }
+        button:disabled { opacity: .5; cursor: default; }
+
         :host {
             display: block;
             width: 100%;
@@ -718,6 +739,12 @@ export class AskView extends LitElement {
 
     constructor() {
         super();
+        this.ownerEpoch=0;
+        this.attachments = [];
+        this.submittedAttachments = [];
+        this.capturePending = 0;
+        this.attachmentError = '';
+        this.draftText = '';
         this.currentResponse = '';
         this.currentQuestion = '';
         this.contextLabel = '';
@@ -797,6 +824,12 @@ export class AskView extends LitElement {
             window.api.askView.onScrollResponseUp(this._scrollUp);
             window.api.askView.onScrollResponseDown(this._scrollDown);
             this.handleAskStateUpdate = (event, newState) => {
+                if (newState.feedEntry && (newState.feedEntry.id !== this.liveEntry?.id || newState.feedEntry.answer !== this.liveEntry?.answer || newState.feedEntry.status !== this.liveEntry?.status)) this.liveEntry = newState.feedEntry;
+                if (newState.feedSessionId && newState.feedSessionId !== this.feedPage?.sessionId) this.liveEntry = newState.feedEntry || null;
+                this.attachments = newState.attachments || [];
+                this.submittedAttachments = newState.submittedAttachments || [];
+                this.capturePending = newState.capturePending || 0;
+                this.attachmentError = newState.attachmentError || '';
                 this.currentResponse = newState.currentResponse;
                 this.currentQuestion = newState.currentQuestion;
                 this.contextLabel = newState.contextLabel || '';
@@ -806,6 +839,23 @@ export class AskView extends LitElement {
                 this.showTextInput = true;
             };
             window.api.askView.onAskStateUpdate(this.handleAskStateUpdate);
+            this.feedPageListener = (event, page) => { this.feedPage=page; this.liveEntry=null; };
+            window.api.askView.onFeedPage(this.feedPageListener);
+            this.navigateListener = (event,direction) => this.shadowRoot.querySelector('conversation-feed')?.navigate(direction);
+            window.api.askView.onNavigateResponse(this.navigateListener);
+            this.reloadFeed();
+            this.ownerListener=()=>{this.ownerEpoch++;this.feedPage={entries:[],sessionId:null,reset:true};this.liveEntry=null;this.draftText='';this.attachments=[];};
+            window.api.interview?.onOwnerChanging?.(this.ownerListener);
+            this.userStateListener=()=>this.reloadFeed();
+            window.api.common?.onUserStateChanged?.(this.userStateListener);
+            this.submitDraftListener = () => this.handleSendText();
+            window.api.askView.onSubmitDraft(this.submitDraftListener);
+            Promise.resolve(window.api.askView.getAttachments()).then(state => {
+                if(!state)return;
+                this.attachments = state.attachments;
+                this.capturePending = state.capturePending || 0;
+                this.attachmentError = state.attachmentError || '';
+            });
             console.log('AskView: IPC 이벤트 리스너 등록 완료');
         }
     }
@@ -813,6 +863,13 @@ export class AskView extends LitElement {
     disconnectedCallback() {
         super.disconnectedCallback();
         this.resizeObserver?.disconnect();
+        this.ownerEpoch++;
+        window.api?.interview?.removeOnOwnerChanging?.(this.ownerListener);
+        window.api?.common?.removeOnUserStateChanged?.(this.userStateListener);
+
+        if (this.feedPageListener) window.api?.askView.removeOnFeedPage(this.feedPageListener);
+        if (this.navigateListener) window.api?.askView.removeOnNavigateResponse(this.navigateListener);
+        if (this.submitDraftListener) window.api?.askView.removeOnSubmitDraft(this.submitDraftListener);
 
         console.log('📱 AskView disconnectedCallback - IPC 이벤트 리스너 제거');
 
@@ -843,18 +900,26 @@ export class AskView extends LitElement {
     }
 
 
+    async reloadFeed() {
+        const epoch=this.ownerEpoch;
+        try {
+            const page=await window.api?.askView.getFeed();
+            if(page&&epoch===this.ownerEpoch)this.feedPage=page;
+        }catch(error){if(epoch===this.ownerEpoch)this.attachmentError=error.message;}
+    }
+
     async loadLibraries() {
         try {
             if (!window.marked) {
-                await this.loadScript('../../assets/marked-4.3.0.min.js');
+                await this.loadScript('../assets/marked-4.3.0.min.js');
             }
 
             if (!window.hljs) {
-                await this.loadScript('../../assets/highlight-11.9.0.min.js');
+                await this.loadScript('../assets/highlight-11.9.0.min.js');
             }
 
             if (!window.DOMPurify) {
-                await this.loadScript('../../assets/dompurify-3.0.7.min.js');
+                await this.loadScript('../assets/dompurify-3.0.7.min.js');
             }
 
             this.marked = window.marked;
@@ -893,6 +958,7 @@ export class AskView extends LitElement {
             if (this.DOMPurify) {
                 this.isDOMPurifyLoaded = true;
                 console.log('DOMPurify loaded successfully in AskView');
+                window.dispatchEvent(new Event('ai-markdown-ready'));
             }
         } catch (error) {
             console.error('Failed to load libraries in AskView:', error);
@@ -982,15 +1048,7 @@ export class AskView extends LitElement {
     }
 
     handleScroll(direction) {
-        const scrollableElement = this.shadowRoot.querySelector('#responseContainer');
-        if (scrollableElement) {
-            const scrollAmount = 100; // 한 번에 스크롤할 양 (px)
-            if (direction === 'up') {
-                scrollableElement.scrollTop -= scrollAmount;
-            } else {
-                scrollableElement.scrollTop += scrollAmount;
-            }
-        }
+        this.shadowRoot.querySelector('conversation-feed')?.scrollByAmount(direction === 'up' ? -100 : 100);
     }
 
 
@@ -1275,18 +1333,40 @@ export class AskView extends LitElement {
     }
 
     async handleSendText(e, overridingText = '') {
+        if (this.isLoading || this.isStreaming || this.capturePending || this.sending) return;
         const textInput = this.shadowRoot?.getElementById('textInput');
         const text = (overridingText || textInput?.value || '').trim();
-        // if (!text) return;
-
-        if (textInput) textInput.value = '';
-        this.focusTextInput();
-
-        if (window.api) {
-            window.api.askView.sendMessage(text).catch(error => {
-                console.error('Error sending text:', error);
-            });
+        const submittedDraft = this.draftText;
+        this.sending = true;
+        try {
+            const result = await window.api.askView.sendMessage({ text, attachmentIds: this.attachments.map(a => a.id) });
+            if (result.success) {
+                if (this.draftText === submittedDraft) this.draftText = '';
+                this.focusTextInput();
+            } else {
+                this.attachmentError = result.error || 'Could not send. Your draft was retained.';
+            }
+        } catch (error) {
+            this.attachmentError = error.message;
+        } finally {
+            this.sending = false;
         }
+    }
+
+    async clearDraft() {
+        const result = await window.api.askView.clearDraftAttachments();
+        if (result.success) this.draftText = '';
+    }
+
+    renderAttachments(images, removable = false) {
+        if (!images.length) return '';
+        return html`<div class="attachment-strip" aria-label=${removable ? 'Draft screenshots' : 'Submitted screenshots'}>
+            ${images.map((image, index) => html`<figure class="attachment">
+                <img src=${image.thumbnail} alt=${`Screenshot ${index + 1}`} />
+                <figcaption>Screenshot ${index + 1}</figcaption>
+                ${removable ? html`<button aria-label=${`Remove screenshot ${index + 1}`} @click=${() => window.api.askView.removeAttachment(image.id)}>×</button>` : ''}
+            </figure>`)}
+        </div>`;
     }
 
     handleTextKeydown(e) {
@@ -1312,7 +1392,7 @@ export class AskView extends LitElement {
             this.renderContent();
         }
     
-        if (changedProperties.has('showTextInput') || changedProperties.has('isLoading') || changedProperties.has('currentResponse')) {
+        if (changedProperties.has('feedPage') || changedProperties.has('liveEntry') || changedProperties.has('attachments') || changedProperties.has('submittedAttachments') || changedProperties.has('capturePending') || changedProperties.has('attachmentError') || changedProperties.has('showTextInput') || changedProperties.has('isLoading') || changedProperties.has('currentResponse')) {
             this.adjustWindowHeightThrottled();
         }
     
@@ -1383,23 +1463,31 @@ export class AskView extends LitElement {
                     </div>
                 </div>
 
+                <conversation-feed @feed-resized=${this.adjustWindowHeightThrottled} kind="ask" .page=${this.feedPage} .liveEntry=${this.liveEntry}></conversation-feed>
                 <!-- Response Container -->
                 ${hasResponse && this.contextLabel ? html`<div class="context-label" title=${this.contextLabel} style="font-size:11px;opacity:0.75;padding:0 16px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this.contextLabel}</div>` : ''}
-                <div class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer" tabindex="0" aria-label="Chat response">
+                <div style="display:none" class="response-container ${!hasResponse ? 'hidden' : ''}" id="responseContainer" tabindex="0" aria-label="Chat response">
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
 
+                ${this.renderAttachments(this.attachments, true)}
+                ${this.capturePending ? html`<div class="attachment-status" role="status">Capturing screenshot…</div>` : ''}
+                ${this.attachmentError ? html`<div class="attachment-status attachment-error" role="alert">${this.attachmentError}</div>` : ''}
+                ${(this.attachments.length || this.draftText) ? html`<div class="attachment-status"><button class="draft-clear" ?disabled=${!!this.capturePending} @click=${this.clearDraft}>Clear draft</button></div>` : ''}
                 <!-- Text Input Container -->
                 <div class="text-input-container ${!hasResponse ? 'no-response' : ''}">
                     <input
                         type="text"
                         id="textInput"
                         placeholder="Ask about your screen or audio"
+                        .value=${this.draftText}
+                        @input=${e => { this.draftText = e.target.value; }}
                         @keydown=${this.handleTextKeydown}
                         @focus=${this.handleInputFocus}
                     />
                     <button
                         class="submit-btn"
+                        ?disabled=${this.isLoading || this.isStreaming || !!this.capturePending}
                         @click=${this.handleSendText}
                     >
                         <span class="btn-label">Submit</span>
@@ -1428,7 +1516,10 @@ export class AskView extends LitElement {
             const inputHeight = (inputEl && !inputEl.classList.contains('hidden')) ? inputEl.offsetHeight : 0;
 
             const contextHeight = this.shadowRoot.querySelector('.context-label')?.offsetHeight || 0;
-            const idealHeight = headerHeight + contextHeight + responseHeight + inputHeight;
+            const attachmentHeight = [...this.shadowRoot.querySelectorAll('.attachment-strip, .attachment-status')]
+                .reduce((height, element) => height + element.offsetHeight, 0);
+            const feedHeight = this.shadowRoot.querySelector('conversation-feed')?.naturalHeight || 0;
+            const idealHeight = headerHeight + contextHeight + feedHeight + inputHeight + attachmentHeight + 24;
 
             const targetHeight = Math.min(700, idealHeight);
 

@@ -97,6 +97,17 @@ async function checkAndRunMigration(firebaseUser) {
         const phase2Promises = [];
 
         for (const session of localSessions) {
+            const feedRows = require('./sqliteClient').getDb().prepare('SELECT * FROM feed_entries WHERE session_id = ?').all(session.id);
+            for (const row of feedRows) {
+                const ref = doc(db, `sessions/${session.id}/${row.kind}_feed`, row.id);
+                phase2Batch.set(ref, { uid: firebaseUser.uid, timestamp: row.timestamp, data_json: encryptionService.encrypt(row.data_json) });
+                phase2OpCount++;
+                if (phase2OpCount >= MAX_BATCH_OPERATIONS) {
+                    phase2Promises.push(phase2Batch.commit());
+                    phase2Batch = writeBatch(db);
+                    phase2OpCount = 0;
+                }
+            }
             const transcripts = await sqliteSttRepo.getAllTranscriptsBySessionId(session.id);
             for (const t of transcripts) {
                 const transcriptRef = doc(db, `sessions/${session.id}/transcripts`, t.id);

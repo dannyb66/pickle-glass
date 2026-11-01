@@ -56,6 +56,15 @@ const LATEST_SCHEMA = {
             { name: 'sync_state', type: 'TEXT DEFAULT \'clean\'' }
         ]
     },
+    feed_entries: {
+        columns: [
+            { name: 'id', type: 'TEXT PRIMARY KEY' },
+            { name: 'session_id', type: 'TEXT NOT NULL' },
+            { name: 'kind', type: 'TEXT NOT NULL' },
+            { name: 'timestamp', type: 'INTEGER NOT NULL' },
+            { name: 'data_json', type: 'TEXT NOT NULL' }
+        ]
+    },
     summaries: {
         columns: [
             { name: 'session_id', type: 'TEXT PRIMARY KEY' },

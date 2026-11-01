@@ -14,13 +14,15 @@ const getWindowPool = () => {
 
 const sessionRepository = require('../common/repositories/session');
 const askRepository = require('./repositories');
+const feedRepository = require('../common/repositories/feed');
 const { getSystemPrompt } = require('../common/prompts/promptBuilder');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('os');
 const util = require('util');
 const execFile = util.promisify(require('child_process').execFile);
-const { desktopCapturer } = require('electron');
+const { desktopCapturer, screen, nativeImage } = require('electron');
+const { randomUUID } = require('node:crypto');
 const modelStateService = require('../common/services/modelStateService');
 const interviewContext = require('../common/services/interviewContextService');
 
@@ -37,86 +39,54 @@ try {
 let lastScreenshot = null;
 
 async function captureScreenshot(options = {}) {
-    if (process.platform === 'darwin') {
-        try {
-            const tempPath = path.join(os.tmpdir(), `screenshot-${Date.now()}.jpg`);
-
-            await execFile('screencapture', ['-x', '-t', 'jpg', tempPath]);
-
-            const imageBuffer = await fs.promises.readFile(tempPath);
-            await fs.promises.unlink(tempPath);
-
-            if (sharp) {
-                try {
-                    // Try using sharp for optimal image processing
-                    const resizedBuffer = await sharp(imageBuffer)
-                        .resize({ height: 384 })
-                        .jpeg({ quality: 80 })
-                        .toBuffer();
-
-                    const base64 = resizedBuffer.toString('base64');
-                    const metadata = await sharp(resizedBuffer).metadata();
-
-                    lastScreenshot = {
-                        base64,
-                        width: metadata.width,
-                        height: metadata.height,
-                        timestamp: Date.now(),
-                    };
-
-                    return { success: true, base64, width: metadata.width, height: metadata.height };
-                } catch (sharpError) {
-                    console.warn('Sharp module failed, falling back to basic image processing:', sharpError.message);
-                }
-            }
-            
-            // Fallback: Return the original image without resizing
-            console.log('[AskService] Using fallback image processing (no resize/compression)');
-            const base64 = imageBuffer.toString('base64');
-            
-            lastScreenshot = {
-                base64,
-                width: null, // We don't have metadata without sharp
-                height: null,
-                timestamp: Date.now(),
-            };
-
-            return { success: true, base64, width: null, height: null };
-        } catch (error) {
-            console.error('Failed to capture screenshot:', error);
-            return { success: false, error: error.message };
-        }
-    }
-
+    let tempPath;
     try {
-        const sources = await desktopCapturer.getSources({
-            types: ['screen'],
-            thumbnailSize: {
-                width: 1920,
-                height: 1080,
-            },
-        });
-
-        if (sources.length === 0) {
-            throw new Error('No screen sources available');
+        let buffer;
+        if (process.platform === 'darwin') {
+            tempPath = path.join(os.tmpdir(), `glass-${randomUUID()}.jpg`);
+            const args = ['-x', '-t', 'jpg'];
+            if (options.display) {
+                if (!screen.getAllDisplays().some(d => d.id === options.display.id))
+                    throw new Error('The selected display is no longer available.');
+                const { x, y, width, height } = options.display.bounds;
+                args.push(`-R${x},${y},${width},${height}`);
+            }
+            await execFile('screencapture', [...args, tempPath]);
+            buffer = await fs.promises.readFile(tempPath);
+        } else {
+            const sources = await desktopCapturer.getSources({
+                types: ['screen'], thumbnailSize: { width: 2048, height: 2048 },
+            });
+            const source = options.display
+                ? sources.find(s => String(s.display_id) === String(options.display.id)) : sources[0];
+            if (!source || source.thumbnail.isEmpty?.()) throw new Error('No screen capture available. Check screen recording permissions.');
+            buffer = source.thumbnail.toJPEG(80);
         }
-        const source = sources[0];
-        const buffer = source.thumbnail.toJPEG(70);
+        let width, height, thumbnail;
+        if (sharp) {
+            const image = sharp(buffer);
+            const size = options.explicit ? { width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true } : { height: 384 };
+            buffer = await image.resize(size).jpeg({ quality: 80 }).toBuffer();
+            const resized = await sharp(buffer).metadata();
+            width = resized.width; height = resized.height;
+            thumbnail = (await sharp(buffer).resize({ width: 180, height: 110, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer()).toString('base64');
+        } else if (options.explicit) {
+            let image = nativeImage.createFromBuffer(buffer);
+            const original = image.getSize();
+            if (!original.width || !original.height) throw new Error('Empty screenshot. Check screen recording permissions.');
+            const ratio = Math.min(1, 2048 / Math.max(original.width, original.height));
+            image = image.resize({ width: Math.round(original.width * ratio), height: Math.round(original.height * ratio) });
+            ({ width, height } = image.getSize());
+            buffer = image.toJPEG(80);
+            thumbnail = image.resize({ width: 180 }).toJPEG(70).toString('base64');
+        }
         const base64 = buffer.toString('base64');
-        const size = source.thumbnail.getSize();
-
-        return {
-            success: true,
-            base64,
-            width: size.width,
-            height: size.height,
-        };
+        lastScreenshot = { base64, width, height, timestamp: Date.now() };
+        return { success: true, base64, width, height, thumbnail, bytes: base64.length };
     } catch (error) {
-        console.error('Failed to capture screenshot using desktopCapturer:', error);
-        return {
-            success: false,
-            error: error.message,
-        };
+        return { success: false, error: error.message };
+    } finally {
+        if (tempPath) await fs.promises.unlink(tempPath).catch(() => {});
     }
 }
 
@@ -126,6 +96,12 @@ async function captureScreenshot(options = {}) {
  */
 class AskService {
     constructor() {
+        this.feedImports = new Map();
+        this.activeEntry = null;
+        this.attachments = new Map();
+        this.captureEpoch = 0;
+        this.captureQueue = Promise.resolve();
+        this.requestActive = false;
         this.abortController = null;
         this.requestSessionId = null;
         this.reviewSession = null;
@@ -141,14 +117,126 @@ class AskService {
             currentQuestion: '',
             currentResponse: '',
             showTextInput: true,
+            attachments: [], submittedAttachments: [], capturePending: 0, attachmentError: '',
         };
         console.log('[AskService] Service instance created.');
+    }
+
+    async getFeed(before = null, selectedSessionId = null) {
+        const owner = require('../common/services/authService').getCurrentUserId();
+        const sessionId = selectedSessionId || this.reviewSession?.id || await sessionRepository.getOrCreateActive('ask');
+        const session = await sessionRepository.getById(sessionId);
+        if (!session || session.uid !== owner || owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('This history is unavailable for the current account.');
+        if (!this.feedImports.has(sessionId)) {
+            const migration = (async () => {
+                const page = await feedRepository.list(sessionId, 'ask');
+                if (!page.entries.length) {
+                    const legacy = await askRepository.getAllAiMessagesBySessionId(sessionId);
+                    let entry;
+                    for (let index = 0; index < legacy.length; index++) {
+                        const message = legacy[index];
+                        if (message.role === 'user') {
+                            if (entry) await feedRepository.save(sessionId, 'ask', entry);
+                            const timestamp = message.sent_at?.toMillis ? message.sent_at.toMillis() : Number(message.sent_at) * 1000;
+                            entry = { id: `${sessionId}-legacy-${message.id || index}`, timestamp: timestamp || Date.now(), question: message.content, answer: '', status: 'complete', attachments: [] };
+                        } else {
+                            if (!entry) entry = { id: `${sessionId}-legacy-${message.id || index}`, timestamp: message.sent_at?.toMillis ? message.sent_at.toMillis() : Number(message.sent_at) * 1000 || Date.now(), question: '', answer: '', status: 'complete', attachments: [] };
+                            entry.answer += message.content || '';
+                        }
+                    }
+                    if (entry) await feedRepository.save(sessionId, 'ask', entry);
+                }
+            })();
+            this.feedImports.set(sessionId, migration);
+            migration.catch(() => this.feedImports.delete(sessionId));
+        }
+        await this.feedImports.get(sessionId);
+        const page = await feedRepository.list(sessionId, 'ask', before);
+        if (owner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Account changed while loading history.');
+        return { ...page, sessionId, entries: page.entries.map(entry => entry.status === 'streaming' && entry.id !== this.activeEntry?.id ? { ...entry, status: 'interrupted' } : entry) };
+    }
+
+    resetForOwnerChange() {
+        this.captureEpoch++;
+        this.abortController?.abort('Account changed');
+        this.attachments.clear();
+        this.feedImports.clear();
+        this.activeEntry = null;
+        this.state = { ...this.state, currentQuestion: '', currentResponse: '', submittedAttachments: [],
+            feedEntry: null, feedSessionId: null, capturePending: 0, attachmentError: '', isLoading: false, isStreaming: false };
+        this.clearReviewContext();
+    }
+
+    getAttachmentState() {
+        return { attachments: [...this.attachments.values()].map(({ id, thumbnail, width, height, timestamp }) =>
+            ({ id, thumbnail: `data:image/jpeg;base64,${thumbnail}`, width, height, timestamp })),
+            capturePending: this.state.capturePending, attachmentError: this.state.attachmentError };
+    }
+
+    removeAttachment(id) {
+        this.attachments.delete(id);
+        this.state.attachmentError = '';
+        this._broadcastState();
+        return this.getAttachmentState();
+    }
+
+    clearDraftAttachments() {
+        if (this.state.capturePending) return { success: false };
+        this.attachments.clear();
+        this.state.attachmentError = '';
+        this._broadcastState();
+        return { success: true };
+    }
+
+    captureAttachment() {
+        // Resolve the pointer now, not after earlier captures have completed.
+        const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+        const epoch = this.captureEpoch;
+        const owner = require('../common/services/authService').getCurrentUserId();
+        const current = () => epoch === this.captureEpoch && owner === require('../common/services/authService').getCurrentUserId();
+        this.state.capturePending++;
+        this.state.attachmentError = '';
+        this._broadcastState();
+        const task = async () => {
+            try {
+                if (!current()) return { success: false, error: 'Account changed.' };
+                if (this.attachments.size >= 5) throw new Error('Maximum five screenshots per question. Remove one to capture another.');
+                const image = await captureScreenshot({ display, explicit: true });
+                if (!current()) return { success: false, error: 'Account changed.' };
+                if (!image.success) throw new Error(image.error);
+                if ([...this.attachments.values()].reduce((n, a) => n + a.bytes, 0) + image.bytes > 20 * 1024 * 1024)
+                    throw new Error('Screenshot attachments exceed 20 MB. Remove an image and try again.');
+                const id = randomUUID();
+                this.attachments.set(id, { ...image, id, timestamp: Date.now() });
+                return { success: true };
+            } catch (error) {
+                if (current()) this.state.attachmentError = error.message;
+                return { success: false, error: error.message };
+            } finally {
+                if (current()) {
+                this.state.capturePending--;
+                this.state.showTextInput = true;
+                this.state.isVisible = true;
+                internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
+                this._broadcastState();
+                const win = getWindowPool()?.get('ask');
+                if (win && !win.isDestroyed()) {
+                    win.focus?.();
+                    win.webContents.send('ask:showTextInput');
+                }
+                }
+            }
+        };
+        const result = this.captureQueue.then(task);
+        this.captureQueue = result.catch(() => {});
+        return result;
     }
 
     _broadcastState() {
         const askWindow = getWindowPool()?.get('ask');
         if (askWindow && !askWindow.isDestroyed()) {
-            askWindow.webContents.send('ask:stateUpdate', this.state);
+            askWindow.webContents.send('ask:stateUpdate', { ...this.state, ...this.getAttachmentState(),
+                feedEntry: this.activeEntry ? { ...this.activeEntry, answer: this.state.currentResponse } : this.state.feedEntry });
         }
     }
 
@@ -190,11 +278,13 @@ class AskService {
             }
     
             this.state = {
+                ...this.state,
                 isVisible      : false,
                 isLoading      : false,
                 isStreaming    : false,
-                currentQuestion: '',
-                currentResponse: '',
+                currentQuestion: this.state.currentQuestion,
+                currentResponse: this.state.currentResponse,
+                submittedAttachments: [],
                 showTextInput  : true,
             };
             this._broadcastState();
@@ -225,12 +315,25 @@ class AskService {
      */
     async sendMessage(userPrompt, conversationHistoryRaw = null) {
         const requestOwner = require('../common/services/authService').getCurrentUserId();
+        if (this.requestActive || this.state.capturePending) return { success: false, error: 'Wait for the current request or screenshot capture to finish.' };
+        let attachmentIds = [];
+        if (userPrompt && typeof userPrompt === 'object') {
+            attachmentIds = userPrompt.attachmentIds;
+            userPrompt = userPrompt.text;
+            if (!Array.isArray(attachmentIds) || new Set(attachmentIds).size !== attachmentIds.length ||
+                attachmentIds.some(id => typeof id !== 'string' || !this.attachments.has(id)))
+                return { success: false, error: 'Invalid or expired screenshot attachment.' };
+        }
+        if (typeof userPrompt !== 'string') return { success: false, error: 'Question must be text.' };
+        const selectedImages = attachmentIds.map(id => this.attachments.get(id));
+        this.requestActive = true;
         internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
             isLoading: true,
             isStreaming: false,
             currentQuestion: userPrompt,
+            submittedAttachments: this.getAttachmentState().attachments.filter(a => attachmentIds.includes(a.id)),
             currentResponse: '',
             contextLabel: '',
             showTextInput: true,
@@ -245,7 +348,8 @@ class AskService {
 
 
         let sessionId;
-
+        let completed = false;
+        let requestError = '';
         try {
             console.log(`[AskService] 🤖 Processing message: ${userPrompt.substring(0, 50)}...`);
 
@@ -261,6 +365,15 @@ class AskService {
             this.requestSessionId = sessionId;
             const interview = interviewContext.context(sessionId);
             this.state.contextLabel = interview.profile ? `Interview: ${interview.profile.name} · v${interview.profile.revision}` : 'Generic mode';
+            const feed = await this.getFeed(null, sessionId);
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
+            this.state.feedSessionId = sessionId;
+            const askWin = getWindowPool()?.get('ask');
+            askWin?.webContents.send('ask:feedPage', { ...feed, reset: true });
+            this.activeEntry = { id: randomUUID(), timestamp: Date.now(), question: userPrompt, answer: '',
+                attachments: this.state.submittedAttachments, status: 'streaming' };
+            await feedRepository.save(sessionId, 'ask', this.activeEntry);
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             this._broadcastState();
             // Normal Ask requests include captured audio from this active session.
             // An explicit array (including [] for screen-only Ask) remains authoritative.
@@ -283,10 +396,12 @@ class AskService {
             }
             console.log(`[AskService] Using model: ${modelInfo.model} for provider: ${modelInfo.provider}`);
 
-            const screenshotResult = await captureScreenshot({ quality: 'medium' });
+            const screenshotResult = selectedImages.length ? { success: false } : await captureScreenshot({ quality: 'medium' });
             if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) throw new Error('Request context changed. Ask again.');
             const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
-            if (screenshotBase64) require('../common/services/insightsScreenContext').remember(sessionId, requestOwner, screenshotResult);
+            for (const image of selectedImages.length ? selectedImages : (screenshotBase64 ? [screenshotResult] : [])) {
+                require('../common/services/insightsScreenContext').remember(sessionId, requestOwner, image);
+            }
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 
@@ -304,11 +419,8 @@ class AskService {
 
             const currentMessage = messages[1];
             if (interview.context) messages.splice(1, 0, interview.context, { role: 'user', content: `Recent conversation (observations):\n${conversationHistory}` });
-            if (screenshotBase64) {
-                currentMessage.content.push({
-                    type: 'image_url',
-                    image_url: { url: `data:image/jpeg;base64,${screenshotBase64}` },
-                });
+            for (const image of selectedImages.length ? selectedImages : (screenshotBase64 ? [{ base64: screenshotBase64 }] : [])) {
+                currentMessage.content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${image.base64}` } });
             }
             
             const streamingLLM = createStreamingLLM(modelInfo.provider, {
@@ -340,11 +452,15 @@ class AskService {
                 });
 
                 await this._processStream(reader, askWin, sessionId, signal, requestOwner);
+                if (signal.aborted) throw new Error('Request cancelled. Your draft was retained.');
+                attachmentIds.forEach(id => this.attachments.delete(id));
+                this._broadcastState();
+                completed = true;
                 return { success: true };
 
             } catch (multimodalError) {
                 // 멀티모달 요청이 실패했고 스크린샷이 포함되어 있다면 텍스트만으로 재시도
-                if (screenshotBase64 && this._isMultimodalError(multimodalError)) {
+                if (!selectedImages.length && screenshotBase64 && this._isMultimodalError(multimodalError)) {
                     console.log(`[AskService] Multimodal request failed, retrying with text-only: ${multimodalError.message}`);
                     
                     // 텍스트만으로 메시지 재구성
@@ -369,6 +485,8 @@ class AskService {
                     });
 
                     await this._processStream(fallbackReader, askWin, sessionId, signal, requestOwner);
+                    if (signal.aborted) throw new Error('Request cancelled. Your draft was retained.');
+                    completed = true;
                     return { success: true };
                 } else {
                     // 다른 종류의 에러이거나 스크린샷이 없었다면 그대로 throw
@@ -377,8 +495,9 @@ class AskService {
             }
 
         } catch (error) {
+            requestError = error.message || 'Request failed';
             // A superseded request must not reset the newer question or its stream.
-            if (signal.aborted) return { success: false, error: 'Request cancelled.' };
+            if (signal.aborted || requestOwner !== require('../common/services/authService').getCurrentUserId()) return { success: false, error: 'Request cancelled.' };
             console.error('[AskService] Error during message processing:', error);
             this.state = {
                 ...this.state,
@@ -395,6 +514,23 @@ class AskService {
             }
 
             return { success: false, error: error.message };
+        } finally {
+            if (this.activeEntry) {
+                this.state.feedEntry = { ...this.activeEntry, answer: this.state.currentResponse,
+                    status: completed ? 'complete' : (signal.aborted ? 'cancelled' : 'failed'),
+                    error: completed ? '' : requestError || 'Request cancelled' };
+                this.activeEntry = null;
+                if (requestOwner === require('../common/services/authService').getCurrentUserId()) {
+                    this.state.isLoading = false;
+                    this.state.isStreaming = false;
+                    this.state.showTextInput = true;
+                    try { await feedRepository.save(sessionId, 'ask', this.state.feedEntry); }
+                    catch (error) { this.state.attachmentError = `Answer history could not be saved: ${error.message}`; }
+                    this._broadcastState();
+                }
+            }
+            if (this.abortController?.signal === signal) this.abortController = null;
+            this.requestActive = false;
         }
     }
 
@@ -453,9 +589,7 @@ class AskService {
                 console.log(`[AskService] Stream reading was intentionally cancelled. Reason: ${signal.reason}`);
             } else {
                 console.error('[AskService] Error while processing stream:', streamError);
-                if (askWin && !askWin.isDestroyed()) {
-                    askWin.webContents.send('ask-response-stream-error', { error: streamError.message });
-                }
+                throw streamError;
             }
         } finally {
             if (!signal.aborted) {

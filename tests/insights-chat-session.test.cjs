@@ -1,3 +1,4 @@
+const summaryDependencies = require('./summary-test-dependencies.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -8,7 +9,7 @@ function load(relative, mocks) {
     const module = { exports: {} };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src', relative), 'utf8'), {
         module, exports: module.exports, process, console: { log() {}, warn() {}, error() {} },
-        require(name) { if (!(name in mocks)) throw Error(`Unexpected ${name}`); return mocks[name]; },
+        require(name) { if (name in summaryDependencies) return summaryDependencies[name]; if (!(name in mocks)) throw Error(`Unexpected ${name}`); return mocks[name]; },
     });
     return module.exports;
 }
@@ -51,14 +52,15 @@ test('fresh Insights refresh ensures the chat session and analyzes without start
     assert.match(h.calls[0][1].content, /Question without audio/);
 });
 
-test('real chat events attach the context and auto-analyze completed answers with audio off', async () => {
+test('real chat events attach context and schedule completed answers through cadence with audio off', async () => {
     const h = harness();
     h.bridge.emit('ask:messageSaved', { sessionId: 'chat-session', owner: 'a', role: 'user' });
     assert.equal(h.listen.summaryService.currentSessionId, 'chat-session');
     assert.equal(h.calls.length, 0);
     h.controls.messages.push({ role: 'assistant', content: 'Draft answer' });
     h.bridge.emit('ask:messageSaved', { sessionId: 'chat-session', owner: 'a', role: 'assistant' });
-    await h.listen.summaryService.queue;
+    assert.equal(h.calls.length, 0, 'one completed answer waits for the configured cadence');
+    await h.listen.summaryService.scheduler.flush();
     assert.equal(h.calls.length, 1);
     assert.equal(h.controls.captures, 0, 'automatic refresh uses chat screenshots without taking new ones');
     assert.equal(h.controls.sttStarts, 0);
@@ -79,7 +81,7 @@ test('chat events cannot replace a different actively recording session', () => 
 test('pending session selection cannot restore context after explicit Start or a newer chat context', async t => {
     for (const change of ['clear', 'new-chat']) await t.test(change, async () => {
         const h = harness(); h.listen.summaryService.setSessionId('old-context', { isRecording: false });
-        let finish; h.controls.lookup = () => new Promise(resolve => { finish = resolve; });
+        let finish; h.controls.lookup = id => id === 'old-context' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ id, uid: 'a' });
         const pending = h.listen.analyzeInsights('entire', { show: true });
         if (change === 'clear') h.listen.clearReviewedSession();
         else h.bridge.emit('ask:messageSaved', { sessionId: 'new-context', owner: 'a', role: 'user' });

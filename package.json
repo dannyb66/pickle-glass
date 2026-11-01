@@ -21,7 +21,8 @@
         "build:web": "cd pickleglass_web && npm run build && cd ..",
         "build:all": "npm run build:renderer && npm run build:web",
         "watch:renderer": "node build.js --watch",
-        "test": "node --test tests"
+        "test": "node --test tests/*.test.cjs",
+        "test:electron-feeds": "electron tests/electron-feeds.smoke.cjs && electron tests/electron-storage.smoke.cjs"
     },
     "keywords": [
         "glass",

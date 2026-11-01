@@ -181,7 +181,10 @@ class ShortcutsService {
             if (keybinds.toggleVisibility) {
                 globalShortcut.register(keybinds.toggleVisibility, () => this.toggleAllWindowsVisibility());
             }
-            console.log('[Shortcuts] registerOnlyToggleVisibility, only toggleVisibility shortcut is registered.');
+            if (keybinds.manualScreenshot && header?.currentHeaderState !== 'apikey') {
+                this.registerScreenshotShortcut(keybinds.manualScreenshot);
+            }
+            console.log('[Shortcuts] Hidden mode: visibility and screenshot shortcuts registered.');
             return;
         }
 
@@ -274,29 +277,37 @@ class ShortcutsService {
                      };
                      break;
                 case 'manualScreenshot':
-                    callback = () => {
-                        if(mainWindow && !mainWindow.isDestroyed()) {
-                             mainWindow.webContents.executeJavaScript('window.captureManualScreenshot && window.captureManualScreenshot();');
-                        }
-                    };
+                    callback = () => { askService.captureAttachment().catch(error => console.error('[Screenshot]', error)); };
                     break;
                 case 'previousResponse':
-                    callback = () => sendToRenderer('navigate-previous-response');
+                    callback = () => sendToRenderer('ask:navigateResponse', -1);
                     break;
                 case 'nextResponse':
-                    callback = () => sendToRenderer('navigate-next-response');
+                    callback = () => sendToRenderer('ask:navigateResponse', 1);
                     break;
             }
             
             if (callback) {
                 try {
-                    globalShortcut.register(accelerator, callback);
+                    const registered = globalShortcut.register(accelerator, callback);
+                    if (!registered && action === 'manualScreenshot') {
+                        askService.state.attachmentError = `Screenshot shortcut ${accelerator} is unavailable. Change it in Settings.`;
+                        askService._broadcastState();
+                    }
                 } catch(e) {
                     console.error(`[Shortcuts] Failed to register shortcut for "${action}" (${accelerator}):`, e.message);
                 }
             }
         }
         console.log('[Shortcuts] All shortcuts have been registered.');
+    }
+
+    registerScreenshotShortcut(accelerator) {
+        const registered = globalShortcut.register(accelerator, () => askService.captureAttachment().catch(console.error));
+        if (!registered) {
+            askService.state.attachmentError = `Screenshot shortcut ${accelerator} is unavailable. Change it in Settings.`;
+            askService._broadcastState();
+        }
     }
 
     unregisterAll() {

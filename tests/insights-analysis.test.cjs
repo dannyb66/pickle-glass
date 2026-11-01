@@ -1,3 +1,4 @@
+const summaryDependencies = require('./summary-test-dependencies.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,6 +25,7 @@ function harness(rows = Array.from({ length: 35 }, (_, i) => ({ speaker: 'Them',
     const module = { exports: {} };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/features/listen/summary/summaryService.js'), 'utf8'), {
         module, exports: module.exports, console: { log() {}, error() {} }, require: name => {
+            if (name in summaryDependencies) return summaryDependencies[name];
             if (!(name in mocks)) throw new Error(`Unexpected dependency ${name}`);
             return mocks[name];
         },
@@ -176,12 +178,14 @@ test('manual analysis combines chronological chat/audio, chat screenshots and a 
     assert.equal(h.service.getState().coveredTurns, 5);
 });
 
-test('completed chat answers drive automatic insights without recording; automatic analysis uses cached screens', async () => {
+test('completed chat answers follow cadence without recording; automatic analysis uses cached screens', async () => {
     const h = harness([]); h.service.setSessionId('session-a', { isRecording: false });
     h.controls.messages = [{ role: 'user', content: 'Question' }, { role: 'assistant', content: 'Answer' }];
     h.controls.images = [{ base64: 'chat-image', mimeType: 'image/jpeg', origin: 'chat', capturedAt: 1000 }];
     h.service.onChatMessageSaved('user'); await tick(); assert.equal(h.calls.length, 0);
-    await h.service.onChatMessageSaved('assistant');
+    h.service.onChatMessageSaved('assistant');
+    assert.equal(h.calls.length, 0, 'one completed answer waits for cadence');
+    await h.service.scheduler.flush();
     assert.equal(h.calls.length, 1); assert.equal(h.controls.captures, 0);
     assert.equal(h.service.getState().sources.chat, 2);
     h.service.setAutoEnabled(false); await h.service.onChatMessageSaved('assistant');
@@ -229,6 +233,7 @@ test('real Ollama image rejection retains its detail for text fallback; authenti
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/features/common/ai/providers/ollama.js'), 'utf8'), {
         module, exports: module.exports, setTimeout, console: { log() {}, error() {} },
         require: name => {
+            if (name in summaryDependencies) return summaryDependencies[name];
             if (name === 'http') return {};
             if (name === 'node-fetch') return async (_url, options) => {
                 const body = JSON.parse(options.body); requests.push(body);
@@ -248,4 +253,14 @@ test('real Ollama image rejection retains its detail for text fallback; authenti
     status = 401; requests.length = 0;
     await assert.rejects(h.service.requestAnalysis('entire'), /401 Unauthorized/);
     assert.equal(requests.length, 1);
+});
+
+test('successful manual refresh acknowledges pending content instead of scheduling an identical refresh', async () => {
+    const h = harness();
+    h.service.addConversationTurn('Me', 'Pending turn');
+    assert.equal(h.service.scheduler.pending, 1);
+    await h.service.requestAnalysis('recent');
+    assert.equal(h.service.scheduler.pending, 0);
+    await h.service.scheduler.flush();
+    assert.equal(h.calls.length, 1);
 });
