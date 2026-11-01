@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Compact session metadata and Copy controls with smaller typography, shorter timestamps, and copied feedback.
+
 ### Added
 
 - Capture the display under the pointer into removable Ask screenshot attachments with Cmd/Ctrl+Shift+S.
